@@ -14,7 +14,9 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    # GitHub 已于 2026-11-02 退役 macos-14 镜像；macos-15 为 arm64 + Xcode 16.x，
+    # 比 macos-latest（现为 macOS 26 / Xcode 26）更贴合 Flutter 3.24.0
+    runs-on: macos-15
     env:
       HAS_SIGNING: ${{ secrets.IOS_P12_BASE64 != '' }}
       HAS_PROFILE: ${{ secrets.IOS_PROVISION_B64 != '' }}

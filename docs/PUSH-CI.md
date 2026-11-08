@@ -83,7 +83,8 @@ git remote -v     # 应显示 https://github.com/用户名/仓库名.git，不�
 | Actions 一栏是空的 | 工作流文件没被提交，或仓库默认分支不是 `main` | `git ls-files .github/workflows/` 确认三个 yml 都在；把默认分支改成 `main` |
 | CI 报 `scripts/verify_project.py: No such file` | 只拷了部分文件 | 确认 `scripts/` 四个脚本都在版本控制里；`push_to_github.sh` 的 `git add -A` 会自动带上 |
 | 编译挂在一堆 lint | 从没真编译过，正常 | 只修**第一条**报错，按手册从上往下逐条来 |
-| macOS runner 排队久 / 收费 | iOS 工作流是手动触发 | 先只跑 Android；iOS 需要时再手动触发 |
+| 手动跑 `selfuse-ios-ipa` 立刻 `Cancelled`（约 2 秒、0 步骤、无产物），批注 `The configuration 'macos-14-arm64-us-default' is not supported` | GitHub 已于 **2026-11-02 退役 `macos-14` 镜像**，该标签连 runner 都分配不到，**不是代码问题** | **已修复**：`.github/workflows/selfuse-ios.yml` 的 `runs-on` 改为 `macos-15`（arm64 / Xcode 16.x）。别换 `macos-latest`（现为 macOS 26，Flutter 3.24.0 太老）；重跑即可 |
+| macOS runner 排队久 / 收费 | iOS 工作流是手动触发，macOS 标准 runner 对公开仓库免费 | 先只跑 Android；iOS 需要时再手动触发，留 10–20 分钟给排队与 `pod install --repo-update` |
 | `flutter build apk --debug` 在下载 `gradle-7.6.3-*.zip` 处失败 | `services.gradle.org` 会 302 到 GitHub Releases；`all` 包约 200 MB，runner 拉取易被限流/重置，**不是代码问题**（run #1/#3 全绿，#2/#4/#5 仅此步红）。同一 runner 内重试无效：同一出口 IP、同一 `GRADLE_USER_HOME`，3 次失败≈1 次失败 | **已修复**：把 `android/gradle/wrapper/gradle-wrapper.properties` 第 5 行的 `gradle-7.6.3-all.zip` 改为 `gradle-7.6.3-bin.zip`（`bin` 约 100 MB，编译够用）。run #6 一次全绿，**别把 `all` 改回去** |
 
 ---
