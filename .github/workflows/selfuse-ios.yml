@@ -1,0 +1,105 @@
+name: selfuse-ios-ipa
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "unsigned 产出未签名 .app；adhoc 产出可分发 IPA（需证书 Secrets）"
+        required: true
+        default: unsigned
+        type: choice
+        options:
+          - unsigned
+          - adhoc
+
+jobs:
+  build:
+    runs-on: macos-14
+    env:
+      HAS_SIGNING: ${{ secrets.IOS_P12_BASE64 != '' }}
+      HAS_PROFILE: ${{ secrets.IOS_PROVISION_B64 != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter 3.24.0
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.0"
+          channel: stable
+          cache: true
+
+      - name: Verify project structure
+        run: python3 scripts/verify_project.py --scope all
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Generate android/ and ios/ native shells
+        run: bash scripts/bootstrap.sh
+
+      - name: Install CocoaPods dependencies
+        run: |
+          cd ios
+          pod install --repo-update
+
+      - name: Decide signing mode
+        id: mode
+        run: |
+          want="${{ github.event.inputs.mode || 'unsigned' }}"
+          if [ "$want" = "adhoc" ] && [ "${{ env.HAS_SIGNING }}" = "true" ] && [ "${{ env.HAS_PROFILE }}" = "true" ]; then
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::证书或描述文件缺失，明确降级为未签名 .app，不会假装产出可安装 IPA"
+          fi
+
+      - name: Import signing assets
+        if: steps.mode.outputs.signed == 'true'
+        env:
+          P12_B64: ${{ secrets.IOS_P12_BASE64 }}
+          P12_PASS: ${{ secrets.IOS_P12_PASSWORD }}
+          PROFILE_B64: ${{ secrets.IOS_PROVISION_B64 }}
+          KEYCHAIN_PASS: ${{ secrets.IOS_KEYCHAIN_PASSWORD }}
+        run: |
+          KEYCHAIN="selfuse-build.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
+          printf '%s' "$P12_B64" | base64 -D > /tmp/selfuse.p12
+          security import /tmp/selfuse.p12 -k "$KEYCHAIN" -P "$P12_PASS" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN" > /dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          printf '%s' "$PROFILE_B64" | base64 -D > /tmp/selfuse.mobileprovision
+          security cms -D -i /tmp/selfuse.mobileprovision > /tmp/selfuse.plist
+          UUID=$(/usr/libexec/PlistBuddy -c 'Print :UUID' /tmp/selfuse.plist)
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          cp /tmp/selfuse.mobileprovision "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID.mobileprovision"
+          rm -f /tmp/selfuse.p12 /tmp/selfuse.mobileprovision /tmp/selfuse.plist
+          echo "Provisioning profile UUID: $UUID"
+
+      - name: Build Ad Hoc IPA
+        if: steps.mode.outputs.signed == 'true'
+        run: flutter build ipa --release --export-options-plist=ios/ExportOptions-AdHoc.plist
+
+      - name: Build unsigned .app (fallback)
+        if: steps.mode.outputs.signed != 'true'
+        run: flutter build ios --release --no-codesign
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist
+          find build/ios/ipa -name '*.ipa' -type f -exec cp {} dist/ \; 2>/dev/null || true
+          APP=$(find build/ios/iphoneos -maxdepth 1 -name '*.app' -type d | head -n 1)
+          if [ -n "$APP" ]; then
+            tar -czf dist/Runner-unsigned.app.tar.gz -C "$(dirname "$APP")" "$(basename "$APP")"
+          fi
+          ls -lh dist
+
+      - name: Upload iOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: selfuse-ios-${{ github.run_number }}
+          path: dist/*
+          retention-days: 30
+          if-no-files-found: error

@@ -1,0 +1,8 @@
+# 复制为 android/key.properties 后填写，并把它加入 .gitignore。
+# 这个文件含密码，绝不提交进仓库；本 .example 只是结构模板，无任何真实凭证。
+# storeFile 的路径相对于 android/app/ 目录（与 build.gradle 里的 file() 一致）。
+
+storeFile=selfuse.jks
+storePassword=REPLACE_WITH_STORE_PASSWORD
+keyAlias=selfuse
+keyPassword=REPLACE_WITH_KEY_PASSWORD

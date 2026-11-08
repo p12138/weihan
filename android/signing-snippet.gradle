@@ -1,0 +1,39 @@
+// 合并到 android/app/build.gradle（Groovy 版 Flutter 模板）。
+// 用法：
+//   1) 把下面的 keystoreProperties 读取块放到 `android {` 之前
+//   2) 把 signingConfigs 块放进 `android { }` 内部
+//   3) 把原有 buildTypes.release 整块替换为下面这段
+// 不直接覆盖原文件，是为了避免与 bootstrap.sh 生成的壳冲突。
+
+def keystoreProperties = new Properties()
+def keystorePropertiesFile = rootProject.file('key.properties')
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+}
+
+android {
+    signingConfigs {
+        release {
+            if (keystorePropertiesFile.exists()) {
+                // 路径相对 android/app/，即 android/app/selfuse.jks
+                storeFile file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            // 有 key.properties 时用自用 release 签名；没有就明确回退 debug 签名。
+            // 回退产物仍可安装，但仅自用，不能覆盖升级未来的正式签名包。
+            signingConfig keystorePropertiesFile.exists()
+                    ? signingConfigs.release
+                    : signingConfigs.debug
+            // 自用包默认不开混淆：讯飞 SDK 与部分 Flutter 插件含反射，
+            // 开启 minify 需自行补齐 keep 规则，否则真机运行时才报错。
+            minifyEnabled false
+        }
+    }
+}

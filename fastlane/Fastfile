@@ -1,0 +1,55 @@
+require 'fileutils'
+
+fastlane_version "2.219.0"
+
+# 自用分发：产物只落到 dist/，不上传 Google Play / App Store / TestFlight。
+DIST = File.expand_path("../dist", __dir__)
+
+platform :android do
+  desc "出一份可直接发给朋友的 release APK（不上传任何商店）"
+  lane :selfuse_apk do
+    gradle(
+      project_dir: "android/",
+      task: "clean assembleRelease",
+      print_command: false,
+      properties: {
+        "android.injected.signing.store.file" => ENV["ANDROID_KEYSTORE"],
+        "android.injected.signing.store.password" => ENV["ANDROID_KEYSTORE_PASS"],
+        "android.injected.signing.key.alias" => ENV["ANDROID_KEY_ALIAS"],
+        "android.injected.signing.key.password" => ENV["ANDROID_KEY_PASS"]
+      }
+    )
+    FileUtils.mkdir_p(DIST)
+    Dir.glob("../build/app/outputs/flutter-apk/*.apk").each do |apk|
+      FileUtils.cp(apk, DIST)
+    end
+    UI.success("APK 已放到 #{DIST}，直接发给朋友即可（需开启未知来源）")
+  end
+end
+
+platform :ios do
+  desc "Ad Hoc IPA：供已登记 UDID 的设备安装，不上传 TestFlight"
+  lane :selfuse_ipa do
+    build_app(
+      workspace: "ios/Runner.xcworkspace",
+      scheme: "Runner",
+      export_method: "ad-hoc",
+      export_options: "ios/ExportOptions-AdHoc.plist",
+      output_directory: DIST,
+      clean: true
+    )
+    UI.success("IPA 已放到 #{DIST}")
+  end
+
+  desc "无证书时明确降级：产出未签名 .app，不假装成功"
+  lane :selfuse_unsigned do
+    build_app(
+      workspace: "ios/Runner.xcworkspace",
+      scheme: "Runner",
+      skip_codesigning: true,
+      export_method: "development",
+      output_directory: DIST
+    )
+    UI.important("产物未签名，不能直接装到非越狱 iPhone；请补齐 Apple 证书后改跑 selfuse_ipa")
+  end
+end

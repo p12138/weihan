@@ -1,0 +1,22 @@
+name: uyghur_interpreter
+description: >-
+  维汉互译 App · 自用双端工程地基。仅用于验证 Flutter 3.24.0 / Java 17 /
+  Gradle 工具链能否产出 debug APK，不含任何业务代码。
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  # Flutter 3.24.0 自带 Dart 3.5.x；下限对齐 CI 固定版本
+  sdk: '>=3.3.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

@@ -1,0 +1,19 @@
+# Flutter
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.build/
+build/
+*.iml
+.idea/
+
+# 应用项目请提交 pubspec.lock 以锁定插件版本，不要忽略它
+
+# 自用签名资产 —— 绝不入库
+*.jks
+*.keystore
+*.p12
+*.mobileprovision
+android/key.properties
+android/app/selfuse.jks
+dist/
