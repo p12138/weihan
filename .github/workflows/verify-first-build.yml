@@ -67,6 +67,20 @@ jobs:
           mkdir -p dist
           find build/app/outputs/flutter-apk -name '*.apk' -type f -exec cp {} dist/ \; 2>/dev/null || true
           cp pubspec.lock dist/ 2>/dev/null || true
+          # bootstrap.sh 生成的原生壳单独打包：取回提交后各机器不再各自生成，避免配置漂移。
+          # 排除 Gradle / Xcode 构建产物、本机 SDK 路径与签名资产（后者本就不该进仓库）。
+          tar -czf dist/native-shells.tar.gz \
+            --exclude='android/.gradle' \
+            --exclude='android/build' \
+            --exclude='android/app/build' \
+            --exclude='android/local.properties' \
+            --exclude='android/key.properties' \
+            --exclude='*.jks' --exclude='*.keystore' \
+            --exclude='ios/Pods' \
+            --exclude='ios/.symlinks' \
+            --exclude='ios/Flutter/Generated.xcconfig' \
+            --exclude='ios/Flutter/flutter_export_environment.sh' \
+            android ios 2>/dev/null || true
           ls -lh dist || true
 
       - name: Upload debug APK
@@ -82,6 +96,14 @@ jobs:
         with:
           name: pubspec-lock-${{ github.run_number }}
           path: dist/pubspec.lock
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Upload native shells (android/ + ios/)
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-shells-${{ github.run_number }}
+          path: dist/native-shells.tar.gz
           retention-days: 14
           if-no-files-found: warn
 

@@ -58,16 +58,20 @@ git remote -v     # 应显示 https://github.com/用户名/仓库名.git，不�
 | 原生壳 | `bash scripts/bootstrap.sh` | 手册 §2.4 / §2.5 |
 | 首次编译 | `flutter build apk --debug` | 手册 §2.4 |
 
-产物：`verify-debug-apk-<run>`（debug APK）、`pubspec-lock-<run>`（`pubspec.lock`）。
+产物：`verify-debug-apk-<run>`（debug APK）、`pubspec-lock-<run>`（`pubspec.lock`）、
+`native-shells-<run>`（`android/` + `ios/` 打包，已排除 Gradle / Xcode 构建产物、本机 SDK 路径与签名资产）。
 
 **绿灯之后必做两件事**：
 
 ```bash
 # 1) 从 Artifacts 下载 pubspec.lock 放到仓库根目录并提交，锁定插件版本
-# 2) 把 CI 里 bootstrap.sh 生成的 android/ ios/ 原生壳拉回本地并提交
+# 2) 下载 native-shells-<run> 解压到仓库根目录并提交（覆盖 android/ ios/ 占位目录）
 ```
 
 否则每台机器各生成一份壳，配置容易漂移。
+
+> 下载 Artifact 需要登录态：匿名调 `/actions/artifacts/{id}/zip` 会返回 401。
+> 直接在 Actions 的 run 页面点产物下载即可，不需要额外 Token。
 
 ---
 
