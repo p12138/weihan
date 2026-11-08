@@ -85,6 +85,7 @@ git remote -v     # 应显示 https://github.com/用户名/仓库名.git，不�
 | CI 报 `scripts/verify_project.py: No such file` | 只拷了部分文件 | 确认 `scripts/` 四个脚本都在版本控制里；`push_to_github.sh` 的 `git add -A` 会自动带上 |
 | 编译挂在一堆 lint | 从没真编译过，正常 | 只修**第一条**报错，按手册从上往下逐条来 |
 | macOS runner 排队久 / 收费 | iOS 工作流是手动触发 | 先只跑 Android；iOS 需要时再手动触发 |
+| `flutter build apk --debug` 在下载 `gradle-7.6.3-all.zip` 处失败 | GitHub Release 下载偶发中断，**不是代码问题**（实测 run #1 全绿、run #2 仅此步红，两次工程代码完全一致） | 在 Actions 页点 **Re-run jobs**，或重推一次触发新 run；连续多次失败再考虑缓存 Gradle 发行包 |
 
 ---
 
