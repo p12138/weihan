@@ -97,6 +97,9 @@ jobs:
             --exclude='ios/Flutter/Generated.xcconfig' \
             --exclude='ios/Flutter/flutter_export_environment.sh' \
             android ios 2>/dev/null || true
+          # 原生壳产物必须含 ios/Podfile，否则回填后 pod install 会失败
+          tar -tzf dist/native-shells.tar.gz 2>/dev/null | grep -q '^ios/Podfile$' \
+            || echo "::warning::原生壳产物缺少 ios/Podfile，取回后需补跑 bootstrap.sh"
           ls -lh dist || true
 
       - name: Upload debug APK

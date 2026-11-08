@@ -43,7 +43,14 @@ jobs:
       - name: Install CocoaPods dependencies
         run: |
           cd ios
-          pod install --repo-update
+          test -f Podfile || { echo "::error::ios/Podfile 缺失，请先跑 bash scripts/bootstrap.sh"; exit 1; }
+          set -o pipefail
+          # 不用 --repo-update：Flutter 的 pod 是本地路径依赖，刷新 spec repo 纯属额外网络风险
+          if ! pod install --no-repo-update 2>&1 | tee /tmp/pod_install.log; then
+            echo "::error::pod install 失败，日志末尾："
+            tail -n 25 /tmp/pod_install.log | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
 
       - name: Decide signing mode
         id: mode
@@ -86,7 +93,13 @@ jobs:
 
       - name: Build unsigned .app (fallback)
         if: steps.mode.outputs.signed != 'true'
-        run: flutter build ios --release --no-codesign
+        run: |
+          set -o pipefail
+          if ! flutter build ios --release --no-codesign 2>&1 | tee /tmp/flutter_ios_build.log; then
+            echo "::error::flutter build ios 失败，日志末尾："
+            tail -n 25 /tmp/flutter_ios_build.log | while IFS= read -r line; do echo "::error::$line"; done
+            exit 1
+          fi
 
       - name: Collect artifacts
         run: |

@@ -21,7 +21,9 @@ IOS_TARGET="${IOS_DEPLOY_TARGET:-12.0}"
 has_android=0
 has_ios=0
 if [ -f android/build.gradle ] || [ -f android/build.gradle.kts ]; then has_android=1; fi
-if [ -f ios/Podfile ] || [ -d ios/Runner.xcworkspace ]; then has_ios=1; fi
+# iOS 壳必须同时有 Podfile 与 Runner.xcworkspace。只看 xcworkspace 就跳过生成，
+# 会让 ios/Podfile 永久缺失，CI 里 pod install 直接报 "No Podfile found"。
+if [ -f ios/Podfile ] && [ -d ios/Runner.xcworkspace ]; then has_ios=1; fi
 
 if [ "$has_android" = "1" ] && [ "$has_ios" = "1" ]; then
   echo "[bootstrap] android/ 与 ios/ 原生壳已存在，跳过生成"
@@ -31,13 +33,19 @@ else
     echo "                 请在本机安装，或让 GitHub Actions 执行本脚本。" >&2
     exit 1
   fi
-  echo "[bootstrap] 生成缺失的原生壳：org=$ORG project=$PROJECT"
+  # 只补真正缺失的平台，避免把已入库的壳重新覆盖一遍
+  PLATFORMS=""
+  if [ "$has_android" = "0" ]; then PLATFORMS="android"; fi
+  if [ "$has_ios" = "0" ]; then
+    if [ -n "$PLATFORMS" ]; then PLATFORMS="$PLATFORMS,ios"; else PLATFORMS="ios"; fi
+  fi
+  echo "[bootstrap] 生成缺失的原生壳：platforms=$PLATFORMS org=$ORG project=$PROJECT"
   # 已有 pubspec.yaml 时，flutter create 会沿用其中的 name；
   # 此时强塞 --project-name 可能与 pubspec 冲突，故只在全新目录里传。
   if [ -f pubspec.yaml ]; then
-    flutter create --platforms=android,ios --org "$ORG" .
+    flutter create --platforms="$PLATFORMS" --org "$ORG" .
   else
-    flutter create --platforms=android,ios --org "$ORG" --project-name "$PROJECT" .
+    flutter create --platforms="$PLATFORMS" --org "$ORG" --project-name "$PROJECT" .
   fi
   echo "[bootstrap] 提示：flutter create 不会覆盖已存在的 lib/ 代码，但仍请检查 git diff"
 fi
