@@ -61,17 +61,16 @@ git remote -v     # 应显示 https://github.com/用户名/仓库名.git，不�
 产物：`verify-debug-apk-<run>`（debug APK）、`pubspec-lock-<run>`（`pubspec.lock`）、
 `native-shells-<run>`（`android/` + `ios/` 打包，已排除 Gradle / Xcode 构建产物、本机 SDK 路径与签名资产）。
 
-**绿灯之后必做两件事**：
+**绿灯之后必做两件事（本仓库均已完成）**：
 
-```bash
-# 1) 从 Artifacts 下载 pubspec.lock 放到仓库根目录并提交，锁定插件版本
-# 2) 下载 native-shells-<run> 解压到仓库根目录并提交（覆盖 android/ ios/ 占位目录）
-```
+- [x] 从 Artifacts 下载 `pubspec.lock` 放到仓库根目录并提交，锁定插件版本 —— 已从 run #6 的 `pubspec-lock-6` 回填。
+- [x] 下载 `native-shells-<run>` 解压到仓库根目录并提交 —— 已从 run #3 的 `native-shells-3` 回填 58 个壳文件。
 
 否则每台机器各生成一份壳，配置容易漂移。
 
 > 下载 Artifact 需要登录态：匿名调 `/actions/artifacts/{id}/zip` 会返回 401。
-> 直接在 Actions 的 run 页面点产物下载即可，不需要额外 Token。
+> 公开仓库可用 `https://nightly.link/<owner>/<repo>/actions/artifacts/<id>.zip` **零凭证**取回（会再包一层 zip）；
+> 也可直接在 Actions 的 run 页面点产物下载。
 
 ---
 
@@ -85,14 +84,14 @@ git remote -v     # 应显示 https://github.com/用户名/仓库名.git，不�
 | CI 报 `scripts/verify_project.py: No such file` | 只拷了部分文件 | 确认 `scripts/` 四个脚本都在版本控制里；`push_to_github.sh` 的 `git add -A` 会自动带上 |
 | 编译挂在一堆 lint | 从没真编译过，正常 | 只修**第一条**报错，按手册从上往下逐条来 |
 | macOS runner 排队久 / 收费 | iOS 工作流是手动触发 | 先只跑 Android；iOS 需要时再手动触发 |
-| `flutter build apk --debug` 在下载 `gradle-7.6.3-all.zip` 处失败 | GitHub Release 下载偶发中断，**不是代码问题**（实测 run #1 全绿、run #2 仅此步红，两次工程代码完全一致） | 在 Actions 页点 **Re-run jobs**，或重推一次触发新 run；连续多次失败再考虑缓存 Gradle 发行包 |
+| `flutter build apk --debug` 在下载 `gradle-7.6.3-*.zip` 处失败 | `services.gradle.org` 会 302 到 GitHub Releases；`all` 包约 200 MB，runner 拉取易被限流/重置，**不是代码问题**（run #1/#3 全绿，#2/#4/#5 仅此步红）。同一 runner 内重试无效：同一出口 IP、同一 `GRADLE_USER_HOME`，3 次失败≈1 次失败 | **已修复**：把 `android/gradle/wrapper/gradle-wrapper.properties` 第 5 行的 `gradle-7.6.3-all.zip` 改为 `gradle-7.6.3-bin.zip`（`bin` 约 100 MB，编译够用）。run #6 一次全绿，**别把 `all` 改回去** |
 
 ---
 
 ## 5. 之后怎么出包
 
 - Android：Actions → `selfuse-android-apk` → `build_type=debug`（零密钥）或 `release`（需 4 个 keystore Secrets）
-- iOS：Actions → `selfuse-ios-ipa` → `mode=unsigned`（零密钥，只能自己 Xcode 装）或 `adhoc`（需证书 Secrets）
+- iOS：Actions → `selfuse-ios-ipa` → `mode=unsigned`（零密钥，产出未签名 `.ipa` + `.app`，用自己的签名重签后装机测试）或 `adhoc`（需证书 Secrets，给朋友分发）
 - 详细打勾清单见 `docs/自用双端分发清单.md`
 
 > 本仓库所有工作流**都不调用** `upload_to_play_store` / `upload_to_testflight` / `deliver`，

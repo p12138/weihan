@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "unsigned 产出未签名 .app；adhoc 产出可分发 IPA（需证书 Secrets）"
+        description: "unsigned 产出未签名 .ipa + .app（可自行重签装机）；adhoc 产出可分发 IPA（需证书 Secrets）"
         required: true
         default: unsigned
         type: choice
@@ -51,7 +51,7 @@ jobs:
             echo "signed=true" >> "$GITHUB_OUTPUT"
           else
             echo "signed=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::证书或描述文件缺失，明确降级为未签名 .app，不会假装产出可安装 IPA"
+            echo "::notice::证书或描述文件缺失，明确降级为未签名 .ipa / .app，不会假装产出可安装 IPA"
           fi
 
       - name: Import signing assets
@@ -93,6 +93,11 @@ jobs:
           APP=$(find build/ios/iphoneos -maxdepth 1 -name '*.app' -type d | head -n 1)
           if [ -n "$APP" ]; then
             tar -czf dist/Runner-unsigned.app.tar.gz -C "$(dirname "$APP")" "$(basename "$APP")"
+            # 未签名 IPA：用户可用自己的证书 / 免费个人签名重签后装机测试
+            rm -rf Payload && mkdir -p Payload
+            cp -R "$APP" Payload/
+            zip -qr dist/Runner-unsigned.ipa Payload
+            rm -rf Payload
           fi
           ls -lh dist
 
