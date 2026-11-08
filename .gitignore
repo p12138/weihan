@@ -1,0 +1,50 @@
+# ---------- 操作系统 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- 编辑器 / IDE ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---------- Python ----------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---------- Node ----------
+node_modules/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+dist/
+build/
+coverage/
+
+# ---------- 环境变量与密钥（按需调整） ----------
+.env
+.env.*
+!.env.example
+*.local
+secrets.*
+!secrets.example.*
+
+# ---------- 语音 / 模型大文件（确定技术栈后按需调整） ----------
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.pt
+*.pth
+*.onnx
+*.safetensors
+checkpoints/
+models/
