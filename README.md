@@ -191,7 +191,9 @@ Android 直接发 APK 最省事；iOS 需决定是否开 Apple 账号。
 | `NIUTRANS_API_KEY` | 控制台复制的 API-KEY |
 
 之后每次 push，`verify-first-build` 会真实调用一次 `你好 → 维语` 并断言译文非空；
-没配 Secret 时该步骤自动跳过，门禁照常全绿。脚本会自动探测 `ug` / `uy` 语种码与
+没配 Secret 时该步骤自动跳过，门禁照常全绿。**Secret 变更本身不会触发运行**：
+配完两个值后，到 Actions 页对 `verify-first-build` 点一次 **Run workflow**（或任意 push 一次）
+即可完成首次真实校验。脚本会自动探测 `ug` / `uy` 语种码与
 毫秒 / 秒时间戳，把成功组合写进 `::notice::` 批注——官方文档的签名示例值与其
 `paramStr` 的 MD5 对不上（疑似示例密钥被替换过），真实规则由这一步定案。
 App 侧的小牛实现另有单元测试覆盖签名、请求体、重试与降级，**不发真实网络请求**。
