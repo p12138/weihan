@@ -51,7 +51,17 @@ jobs:
         run: flutter pub get
 
       - name: Static analysis
-        run: flutter analyze
+        run: |
+          set -o pipefail
+          if flutter analyze 2>&1 | tee /tmp/flutter_analyze.log; then
+            exit 0
+          fi
+          # 匿名访问看不到 job logs（需仓库 admin），把完整输出写进批注便于排错
+          echo "::error::flutter analyze 失败，完整输出如下（逐行写入批注）："
+          while IFS= read -r line || [ -n "$line" ]; do
+            echo "::error::${line}"
+          done < /tmp/flutter_analyze.log
+          exit 1
 
       - name: Unit tests
         run: flutter test --reporter expanded
