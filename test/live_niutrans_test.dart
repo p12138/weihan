@@ -42,6 +42,8 @@ void main() {
       Language.uyghur,
     );
     // 只输出结论与诊断，绝不输出凭证。
+    // CI 靠这一行把结果写进 ::notice:: 批注，故显式豁免 avoid_print。
+    // ignore: avoid_print
     print('Dart live check: found=${result.found} '
         'provider=${result.provider} text=${result.text} '
         'diagnostic=${config.lastDiagnostic}');
