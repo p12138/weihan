@@ -6,6 +6,12 @@
 > (`uyghur-chinese-translator-source.zip`) 经三轮核验**确实不在资料库、也不在本机**。
 > 本仓库是「源码找回之前，先把构建工具链验证掉」的可编译地基。
 
+> **2026-11-09 更新**：工具链与双端出包链路已全部验证通过（Android 真机试装、iOS 未签名 IPA 重签装机均正常）。
+> `lib/` 现已加入**第一阶段业务骨架**：对话 UI + 可插拔 `Translator` / `SpeechPort` 接口 + 离线演示词库。
+> 演示词库只覆盖常见寒暄句，**不是真实机器翻译**；语音识别 / 合成尚未接入，按钮明确禁用，不假装可用。
+> 云端翻译链（Azure → NiuTrans → Hunyuan）与讯飞维语语音属于下一阶段，接口已预留、实现待接；
+> 接入时只需新增 `Translator` 实现并替换 `defaultTranslator`，界面与状态层无需改动。
+
 ---
 
 ## 0. 一句话说明现在的状态
@@ -27,7 +33,7 @@
 | 路径 | 作用 |
 |---|---|
 | `pubspec.yaml` | 最小依赖；Dart 包名 `uyghur_interpreter`（合法标识符，中文名会让 `pub get` 直接失败） |
-| `lib/main.dart` | 占位页，顺带验证中文与维文 RTL 渲染 |
+| `lib/` | `main.dart` 应用外壳、`conversation.dart` 领域模型与端口、`conversation_page.dart` 对话 UI（维文自动 RTL、方向切换、离线演示词库） |
 | `test/smoke_test.dart` | 1 个冒烟测试，保证 `flutter test` 有东西可跑 |
 | `analysis_options.yaml` / `.gitignore` | lint 规则；已排除 `*.jks` / `key.properties` / `*.p12` / `*.mobileprovision` |
 | `.github/workflows/verify-first-build.yml` | **push 即跑**的零密钥门禁（自检 → analyze → test → 补壳 → debug APK） |
@@ -93,9 +99,10 @@ Android 直接发 APK 最省事；iOS 需决定是否开 Apple 账号。
 
 ## 4. 能力边界（诚实说明）
 
-- 生成这份仓库的环境**没有 Flutter SDK / Android SDK / Xcode**，所以
-  **未真编译、未真打包、未代推仓库、未代签证书、未上传任何商店**。
-  本地能验的都验了（见 `docs/预检报告.md`），真编译以 GitHub Actions 日志为准。
+- 本机**没有 Flutter SDK / Android SDK / Xcode**，真编译与出包一律交给 GitHub Actions；
+  `verify-first-build` 已多次全绿，Android debug APK 与 iOS 未签名 IPA 均已产出并在真机验证。
+  业务层骨架的 `flutter analyze` / `flutter test` / `flutter build apk` 结果同样以 CI 日志为准。
+  本地可运行的是 `scripts/verify_project.py` 静态自检（无需 Flutter SDK）。
 - `bootstrap.sh` 不配 Xcode Signing，需本地用 Xcode 打开 `ios/Runner.xcworkspace` 补 Team / Bundle ID。
 - iOS 硬约束没变：非越狱 iPhone 只能装 Apple 签名过的 IPA。零成本让朋友也能用，只有 PWA 一条路。
 - 所有证书 / keystore / p12 / 密码只给生成与配置方法，仓库内无任何明文凭证。
