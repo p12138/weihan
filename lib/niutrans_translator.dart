@@ -125,7 +125,7 @@ class NiuTransTranslator extends Translator {
         config.lastDiagnostic = '$label：$lastError';
       } on Object catch (error) {
         // 网络不通时重试语种码没有意义，立即停止并把异常写进诊断。
-        lastError = '网络异常 $error';
+        lastError = '网络异常 ${_networkError(error)}';
         config.lastDiagnostic = '$label：$lastError';
         break;
       }
@@ -161,6 +161,14 @@ class NiuTransTranslator extends Translator {
   /// 响应摘要，截断避免把整段返回内容塞进界面提示。
   static String _brief(String value) =>
       value.length <= 160 ? value : '${value.substring(0, 160)}…';
+
+  /// 网络异常摘要。编码器异常会把整个请求体（含 APPID / 签名）带进 message，
+  /// 这里只保留引号前的异常描述，避免敏感标识进入界面或 CI 日志。
+  static String _networkError(Object error) {
+    final String raw = error.toString();
+    final int quote = raw.indexOf('"');
+    return quote > 0 ? raw.substring(0, quote).trim() : _brief(raw);
+  }
 
   Translation _parse(String payload) {
     final Object? decoded = jsonDecode(payload);

@@ -228,8 +228,17 @@ Secret 验证 **App 里那份 Dart 实现**的 URI / 签名 / 请求体 / 响应
 | `小牛返回空译文（响应：…）` | 语种码 / 时间戳单位变了 | 把括号里的响应内容发我，改默认值即可 |
 | `uy/秒`、`ug/毫秒` | 已回落到备选组合 | 同上 |
 
-另外确认三件事：装的是最新 APK（**旧包默认 `ug`，会一直失败**）、
-设置页「终结点」留空、服务商选「小牛翻译」。密钥仍只在内存，重装需重填。
+另外确认三件事：装的是最新 APK、设置页「终结点」留空、服务商选「小牛翻译」。
+密钥仍只在内存，重装需重填。
+
+**2026-11-10 已修复的历史问题**：#23 及更早的包里，`dart:io` 网关用
+`HttpClientRequest.write()` 发请求，默认按 latin1 编码，请求体一含中文就抛
+`Invalid argument (string): Contains invalid characters`，**请求根本没发出去**，
+于是任何中文句子都回落演示词库并误报「请检查 key 和网络」。这和 APPID / API-KEY /
+手机网络都无关，CI 的 Python 校验（发 UTF-8 字节）与假网关单测都没覆盖到，
+直到新增 `Dart live check` 才复现。现改为显式写 UTF-8 字节并给出 `Content-Length`，
+`test/translation_http_test.dart` 用本机 HttpServer 做零外网回归。
+旧包默认语种码仍是 `ug`，**必须换新包**。
 
 ### 边界与后续
 
