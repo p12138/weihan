@@ -328,7 +328,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     final String endpoint = _endpointController.text.trim();
     translationConfig.endpoint = endpoint.isEmpty
         ? 'https://api.cognitive.microsofttranslator.com'
-        : endpoint.replaceAll(const RegExp(r'/+$'), '');
+        : endpoint.replaceAll(RegExp(r'/+$'), '');
     Navigator.of(context).pop();
   }
 
