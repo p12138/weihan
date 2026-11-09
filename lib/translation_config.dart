@@ -71,6 +71,10 @@ class TranslationConfig {
   /// 由 CI 的 live check 探测后可通过 --dart-define 覆盖。
   String ugCode;
 
+  /// 最近一次云端调用的可读诊断信息（不含密钥），供界面显示真实失败原因。
+  /// 属于运行时状态，不会落盘、不随包分发。
+  String lastDiagnostic = '';
+
   /// 是否填了任意密钥（保留给 Azure 实现与旧断言）。
   bool get hasCloudKey => key.trim().isNotEmpty;
 
@@ -100,5 +104,6 @@ class TranslationConfig {
     region = _envRegion;
     endpoint = _envEndpoint;
     ugCode = _envUgCode;
+    lastDiagnostic = '';
   }
 }

@@ -148,6 +148,24 @@ jobs:
           sys.exit(1)
           PY
 
+      # 上面的 Python 脚本只验证凭证与服务端；这里直接跑 App 里的 Dart 实现，
+      # 覆盖 URI / 签名 / 请求体 / 响应解析整条用户侧路径。
+      - name: Dart live check (optional)
+        if: ${{ env.NIUTRANS_APP_ID != '' && env.NIUTRANS_API_KEY != '' }}
+        run: |
+          set -o pipefail
+          if flutter test test/live_niutrans_test.dart --reporter expanded 2>&1 | tee /tmp/dart_live.log; then
+            grep 'Dart live check:' /tmp/dart_live.log | while IFS= read -r line; do
+              echo "::notice::${line}"
+            done
+          else
+            echo "::error::Dart 云端实测失败，完整输出如下："
+            tail -n 60 /tmp/dart_live.log | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            exit 1
+          fi
+
       - name: Azure Translator live check (optional)
         if: ${{ env.AZURE_TRANSLATOR_KEY != '' }}
         run: |

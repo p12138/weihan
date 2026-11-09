@@ -320,4 +320,62 @@ void main() {
     expect(result.provider, '演示词库');
     expect(result.text, 'ئەسسالامۇ ئەلەيكۇم');
   });
+
+  test('成功响应带 errorCode=0 时仍视为成功', () async {
+    final _FakeGateway gateway = _FakeGateway(<String>[
+      '{"from":"zh","to":"uy","errorCode":"0",'
+          '"tgtText":"ياخشىمۇسىز"}',
+    ]);
+    final Translation result = await _translator(gateway).translate(
+      '你好',
+      Language.chinese,
+      Language.uyghur,
+    );
+    expect(result.found, isTrue);
+    expect(result.text, 'ياخشىمۇسىز');
+    expect(gateway.calls, 1);
+  });
+
+  test('业务错误把真实错误码写进诊断，供界面显示', () async {
+    final _FakeGateway gateway = _FakeGateway(<String>[
+      '{"errorCode":"10002","errorMsg":"签名错误"}',
+      '{"errorCode":"10002","errorMsg":"签名错误"}',
+      '{"errorCode":"10002","errorMsg":"签名错误"}',
+    ]);
+    final TranslationConfig config = _config();
+    final Translator chain = FallbackTranslator(<Translator>[
+      _translator(gateway, config: config),
+      const DemoTranslator(),
+    ]);
+    await chain.translate('今天天气怎么样', Language.chinese, Language.uyghur);
+    expect(config.lastDiagnostic, contains('10002'));
+    expect(config.lastDiagnostic, contains('签名错误'));
+    expect(config.lastDiagnostic, contains('uy/'));
+  });
+
+  test('云端成功后清空上一次的诊断', () async {
+    final _FakeGateway gateway = _FakeGateway(<String>[_ok('رەھمەت')]);
+    final TranslationConfig config = _config()..lastDiagnostic = '上次失败';
+    await _translator(gateway, config: config).translate(
+      '谢谢',
+      Language.chinese,
+      Language.uyghur,
+    );
+    expect(config.lastDiagnostic, isEmpty);
+  });
+
+  test('网络异常写进诊断且不重复请求', () async {
+    final _FakeGateway gateway = _FakeGateway(
+      <String>[_ok(' unused ')],
+      networkError: true,
+    );
+    final TranslationConfig config = _config();
+    final Translator chain = FallbackTranslator(<Translator>[
+      _translator(gateway, config: config),
+      const DemoTranslator(),
+    ]);
+    await chain.translate('今天天气怎么样', Language.chinese, Language.uyghur);
+    expect(gateway.calls, 1);
+    expect(config.lastDiagnostic, contains('网络异常'));
+  });
 }

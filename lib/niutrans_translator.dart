@@ -82,6 +82,7 @@ class NiuTransTranslator extends Translator {
     Language from,
     Language to,
   ) async {
+    config.lastDiagnostic = '';
     if (!config.hasCloudConfig) {
       return const Translation(
         text: '',
@@ -111,10 +112,22 @@ class NiuTransTranslator extends Translator {
     ];
     String lastError = '';
     for (final _Variant variant in variants) {
+      final String label =
+          '${variant.ugCode}/${variant.millis ? '毫秒' : '秒'}';
       try {
-        return _parse(await _post(clean, from, to, variant));
+        final Translation parsed =
+            _parse(await _post(clean, from, to, variant));
+        config.lastDiagnostic = '';
+        return parsed;
       } on TranslationException catch (error) {
+        // 业务错误 / HTTP 错误：换备选语种码再试，同时留下面向用户的诊断。
         lastError = error.message;
+        config.lastDiagnostic = '$label：$lastError';
+      } on Object catch (error) {
+        // 网络不通时重试语种码没有意义，立即停止并把异常写进诊断。
+        lastError = '网络异常 $error';
+        config.lastDiagnostic = '$label：$lastError';
+        break;
       }
     }
     throw TranslationException('小牛翻译所有组合均失败：$lastError');
@@ -145,22 +158,29 @@ class NiuTransTranslator extends Translator {
     );
   }
 
+  /// 响应摘要，截断避免把整段返回内容塞进界面提示。
+  static String _brief(String value) =>
+      value.length <= 160 ? value : '${value.substring(0, 160)}…';
+
   Translation _parse(String payload) {
     final Object? decoded = jsonDecode(payload);
     if (decoded is! Map<String, dynamic>) {
       throw const TranslationException('小牛翻译返回不是 JSON 对象');
     }
     final Object? code = decoded['errorCode'];
-    if (code != null && code.toString().trim().isNotEmpty) {
+    final String codeText = code == null ? '' : code.toString().trim();
+    // 部分网关在成功时也会带 errorCode=0 / "0"，只把真正的错误码当失败。
+    if (codeText.isNotEmpty && codeText != '0') {
       throw TranslationException(
-        '小牛翻译返回错误 $code: ${decoded['errorMsg'] ?? ''}',
+        '小牛返回错误 $codeText: ${decoded['errorMsg'] ?? ''}',
       );
     }
-    final String text = (decoded['tgtText'] as String? ?? '').trim();
+    final Object? raw = decoded['tgtText'];
+    final String text = (raw is String ? raw : '').trim();
     if (text.isEmpty) {
       // 语种码或时间戳单位不匹配时接口可能只返回空 tgtText，
-      // 抛异常让 translate 换备选组合，而不是误判为「未找到译文」。
-      throw const TranslationException('小牛翻译返回空译文');
+      // 抛异常让 translate 换备选组合，并把响应摘要带出来便于排障。
+      throw TranslationException('小牛返回空译文（响应：${_brief(payload)}）');
     }
     return Translation(
       text: text,

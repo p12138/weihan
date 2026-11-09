@@ -74,8 +74,14 @@ class _ConversationPageState extends State<ConversationPage> {
             ? '演示词库命中 · 配置小牛翻译后可翻译任意句子'
             : '由 ${result.provider} 返回';
       } else {
+        final String diagnostic = translationConfig.lastDiagnostic.trim();
+        final String short = diagnostic.length > 200
+            ? '${diagnostic.substring(0, 200)}…'
+            : diagnostic;
         _notice = translationConfig.hasCloudConfig
-            ? '云端翻译未返回译文 · 请检查 APPID / API-KEY / 网络'
+            ? (short.isEmpty
+                ? '云端翻译未返回译文 · 请检查 APPID / API-KEY / 网络'
+                : '云端失败 · $short')
             : '演示词库未收录这句 · 配置小牛翻译后可翻译任意句子';
       }
     });
@@ -333,12 +339,25 @@ class _SettingsDialogState extends State<_SettingsDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final String shownEndpoint = translationConfig.endpoint.trim().isEmpty
+        ? _provider.defaultEndpoint
+        : translationConfig.endpoint.trim();
     return AlertDialog(
       title: const Text('云端翻译设置'),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
+            // 配置摘要：截图即可确认包版本、服务商与终结点是否填错。
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                '当前：${_provider.label} · $shownEndpoint'
+                ' · 维语码 ${translationConfig.ugCode} · 诊断版',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+            const SizedBox(height: 12),
             Row(
               children: <Widget>[
                 const Text('服务商'),
