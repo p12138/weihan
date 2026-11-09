@@ -201,7 +201,6 @@ class _ConversationPageState extends State<ConversationPage> {
 
 class _ModeBanner extends StatelessWidget {
   const _ModeBanner({
-    super.key,
     required this.direction,
     required this.speechAvailable,
   });
