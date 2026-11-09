@@ -36,10 +36,12 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('ئۇيغۇرچە → 中文'), findsOneWidget);
-    final Finder voiceButton = find.ancestor(
-      of: find.text('按住说话 · 待接入'),
-      matching: find.byType(TextButton),
+    // TextButton.icon 的 runtimeType 是私有的 _TextButtonWithIcon，
+    // find.byType(TextButton) 精确匹配会查不到，这里改用类型谓词。
+    final Finder voiceButton = find.byWidgetPredicate(
+      (Widget widget) => widget is TextButton,
     );
+    expect(voiceButton, findsOneWidget);
     expect(tester.widget<TextButton>(voiceButton).onPressed, isNull);
   });
 }

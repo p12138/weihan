@@ -14,19 +14,20 @@ on:
   push:
     branches: [main]
     paths:
+      # 只有会改变安装包内容的文件才值得重跑模拟器；
+      # 纯 Dart 测试 / 文档 / 其他工作流的改动不触发，省 macOS 计费分钟。
       - "lib/**"
-      - "test/**"
       - "pubspec.yaml"
       - "pubspec.lock"
       - "android/**"
       - "ios/**"
       - "scripts/**"
-      - ".github/workflows/**"
   workflow_dispatch:
 
 concurrency:
   group: device-smoke-${{ github.ref }}
-  cancel-in-progress: true
+  # 不打断正在跑的模拟器验证；连续 push 时新 run 排队而不是把旧的取消掉
+  cancel-in-progress: false
 
 jobs:
   android-emulator:
