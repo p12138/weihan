@@ -1,19 +1,23 @@
 import 'package:flutter/material.dart';
 
+import 'azure_translator.dart';
 import 'conversation.dart';
+import 'translation_config.dart';
 
-/// 第一阶段默认翻译链：目前只有本地演示词库，云端 provider 待接。
-const Translator defaultTranslator = FallbackTranslator(
-  <Translator>[DemoTranslator()],
-);
+/// 默认翻译链：云端优先，未配置密钥或服务不可用时自动回落到演示词库。
+/// 终结点可配置，将来切到自建 NAS 代理时无需改动这里。
+Translator buildDefaultTranslator() => FallbackTranslator(<Translator>[
+      AzureTranslator(config: translationConfig),
+      const DemoTranslator(),
+    ]);
 
 /// 对话页：文字互译、方向切换、双语气泡（维文自动 RTL）。
 class ConversationPage extends StatefulWidget {
-  const ConversationPage({
+  ConversationPage({
     super.key,
-    this.translator = defaultTranslator,
+    Translator? translator,
     this.speech = const SpeechPort(),
-  });
+  }) : translator = translator ?? buildDefaultTranslator();
 
   final Translator translator;
   final SpeechPort speech;
@@ -74,10 +78,12 @@ class _ConversationPageState extends State<ConversationPage> {
           _newMessage(result.text, direction.target, false),
         );
         _notice = result.isDemo
-            ? '演示词库命中 · 接入云端翻译后可翻译任意句子'
+            ? '演示词库命中 · 配置 Azure Key 后可翻译任意句子'
             : '由 ${result.provider} 返回';
       } else {
-        _notice = '演示词库未收录这句 · 接入云端翻译后可翻译任意句子';
+        _notice = translationConfig.hasCloudKey
+            ? '云端翻译未返回译文 · 请检查 Key / 区域 / 网络'
+            : '演示词库未收录这句 · 配置 Azure Key 后可翻译任意句子';
       }
     });
   }
@@ -89,6 +95,21 @@ class _ConversationPageState extends State<ConversationPage> {
     });
   }
 
+  Future<void> _openSettings() async {
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext context) => const _SettingsDialog(),
+    );
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _notice = translationConfig.hasCloudKey
+          ? '云端翻译已启用 · 现在可以翻译任意句子'
+          : '云端翻译已关闭 · 仅使用本地演示词库';
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final TranslationDirection direction = _state.direction;
@@ -96,6 +117,11 @@ class _ConversationPageState extends State<ConversationPage> {
       appBar: AppBar(
         title: const Text('维汉互译'),
         actions: <Widget>[
+          IconButton(
+            tooltip: '云端翻译设置',
+            onPressed: _openSettings,
+            icon: const Icon(Icons.settings),
+          ),
           IconButton(
             tooltip: '切换翻译方向',
             onPressed: _flipDirection,
@@ -109,6 +135,7 @@ class _ConversationPageState extends State<ConversationPage> {
           _ModeBanner(
             direction: direction,
             speechAvailable: widget.speech.isAvailable,
+            cloudEnabled: translationConfig.hasCloudKey,
           ),
           Expanded(child: _buildList()),
           if (_notice.isNotEmpty)
@@ -203,16 +230,19 @@ class _ModeBanner extends StatelessWidget {
   const _ModeBanner({
     required this.direction,
     required this.speechAvailable,
+    required this.cloudEnabled,
   });
 
   final TranslationDirection direction;
   final bool speechAvailable;
+  final bool cloudEnabled;
 
   @override
   Widget build(BuildContext context) {
     final String speechLabel = speechAvailable ? '已接入' : '待接入';
+    final String modeLabel = cloudEnabled ? '云端翻译' : '演示词库';
     final String label =
-        '${direction.source.label} → ${direction.target.label} · 演示词库 · 语音$speechLabel';
+        '${direction.source.label} → ${direction.target.label} · $modeLabel · 语音$speechLabel';
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -258,6 +288,101 @@ class MessageBubble extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// 云端翻译设置。密钥只保存在进程内存里，不落盘、不入库、不随包分发。
+class _SettingsDialog extends StatefulWidget {
+  const _SettingsDialog();
+
+  @override
+  State<_SettingsDialog> createState() => _SettingsDialogState();
+}
+
+class _SettingsDialogState extends State<_SettingsDialog> {
+  late final TextEditingController _keyController;
+  late final TextEditingController _regionController;
+  late final TextEditingController _endpointController;
+
+  @override
+  void initState() {
+    super.initState();
+    _keyController = TextEditingController(text: translationConfig.key);
+    _regionController = TextEditingController(text: translationConfig.region);
+    _endpointController =
+        TextEditingController(text: translationConfig.endpoint);
+  }
+
+  @override
+  void dispose() {
+    _keyController.dispose();
+    _regionController.dispose();
+    _endpointController.dispose();
+    super.dispose();
+  }
+
+  void _save() {
+    translationConfig.key = _keyController.text.trim();
+    translationConfig.region = _regionController.text.trim();
+    final String endpoint = _endpointController.text.trim();
+    translationConfig.endpoint = endpoint.isEmpty
+        ? 'https://api.cognitive.microsofttranslator.com'
+        : endpoint.replaceAll(const RegExp(r'/+$'), '');
+    Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('云端翻译设置'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            TextField(
+              key: const ValueKey<String>('azure-key-field'),
+              controller: _keyController,
+              obscureText: true,
+              decoration: const InputDecoration(
+                labelText: 'Azure Key 1',
+                hintText: '留空则只用本地演示词库',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              key: const ValueKey<String>('azure-region-field'),
+              controller: _regionController,
+              decoration: const InputDecoration(
+                labelText: '区域（全球区留空）',
+                hintText: '例如 eastasia',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              key: const ValueKey<String>('azure-endpoint-field'),
+              controller: _endpointController,
+              decoration: const InputDecoration(
+                labelText: '终结点',
+                hintText: '自建 NAS 代理时填 http://...',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: <Widget>[
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        TextButton(
+          onPressed: _save,
+          child: const Text('保存'),
+        ),
+      ],
     );
   }
 }

@@ -22,6 +22,11 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # 可选：配置后 CI 会真实调用一次 Azure，验证 Key / 区域 / 中维语言对。
+      # 未配置时对应步骤自动跳过，门禁照常全绿；密钥不进代码、不进产物。
+      AZURE_TRANSLATOR_KEY: ${{ secrets.AZURE_TRANSLATOR_KEY }}
+      AZURE_TRANSLATOR_REGION: ${{ secrets.AZURE_TRANSLATOR_REGION }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -75,6 +80,35 @@ jobs:
             echo "::error::${line}"
           done
           exit 1
+
+      - name: Azure Translator live check (optional)
+        if: ${{ env.AZURE_TRANSLATOR_KEY != '' }}
+        run: |
+          args=(
+            -sS --max-time 30 -X POST
+            "https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from=zh-Hans&to=ug"
+            -H "Ocp-Apim-Subscription-Key: ${AZURE_TRANSLATOR_KEY}"
+            -H "Content-Type: application/json; charset=UTF-8"
+            -d '[{"Text":"你好"}]'
+          )
+          if [ -n "${AZURE_TRANSLATOR_REGION}" ]; then
+            args+=(-H "Ocp-Apim-Subscription-Region: ${AZURE_TRANSLATOR_REGION}")
+          fi
+          curl "${args[@]}" -o /tmp/azure_live.json
+          python3 - <<'PY'
+          import json, sys
+          with open('/tmp/azure_live.json', encoding='utf-8') as f:
+              data = json.load(f)
+          try:
+              text = data[0]['translations'][0]['text']
+          except (KeyError, IndexError, TypeError):
+              print('Azure 返回异常：', data)
+              sys.exit(1)
+          if not text.strip():
+              print('Azure 返回空译文')
+              sys.exit(1)
+          print('Azure zh-Hans -> ug 实测译文：', text)
+          PY
 
       - name: Upload test log on failure
         if: failure()
