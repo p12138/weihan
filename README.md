@@ -7,7 +7,7 @@
 
 > **2026-11-09 更新**：工具链与双端出包链路已全部验证通过（Android 真机试装、iOS 未签名 IPA 重签装机均正常）。
 > `lib/` 已有对话 UI + 可插拔 `Translator` / `SpeechPort` 接口 + 离线演示词库，
-> 并已接入 **小牛翻译文本翻译**（`zh ↔ ug`）：不用绑卡、个人 0 元，默认不启用，
+> 并已接入 **小牛翻译文本翻译**（`zh ↔ uy`，语种码由 CI 实测确定）：不用绑卡、个人 0 元，默认不启用，
 > 在 App 设置里填 APPID / API-KEY 即可翻译任意句子；云端失败自动回落到 12 句演示词库，不会卡住。
 > Azure Translator 实现保留为可选后端，设置页可随时切换（普通 Azure 账户注册需绑卡）。
 > 语音识别 / 合成仍未接入，按钮明确禁用。
@@ -45,7 +45,7 @@
 | `test/smoke_test.dart` | 首页渲染冒烟测试 |
 | `test/conversation_test.dart` | 领域模型 / 降级链 / 演示词库的 9 个单元测试 |
 | `test/conversation_page_test.dart` | 3 个 widget 交互测试，把「中文→维文」等真机验证过的行为固化成自动断言 |
-| `test/niutrans_translator_test.dart` | 14 个单测：签名、请求体、语种码、重试、降级、配置切换，全部用假网关不发网络 |
+| `test/niutrans_translator_test.dart` | 16 个单测：签名、请求体、语种码、重试、降级、配置切换，全部用假网关不发网络 |
 | `test/azure_translator_test.dart` | 9 个单测：请求头、语言映射、区域、降级、异常，全部用假网关不发网络 |
 | `test/settings_test.dart` | 2 个 widget 测试：填入 / 清空凭证后模式条切换 |
 | `analysis_options.yaml` / `.gitignore` | lint 规则；已排除 `*.jks` / `key.properties` / `*.p12` / `*.mobileprovision` |
@@ -190,13 +190,21 @@ Android 直接发 APK 最省事；iOS 需决定是否开 Apple 账号。
 | `NIUTRANS_APP_ID` | 控制台复制的 APPID |
 | `NIUTRANS_API_KEY` | 控制台复制的 API-KEY |
 
+**两个 Secret 必须分开建**：名称框就是键名，值框里只放那一个值，
+不要写成 `NIUTRANS_APP_ID: xxx` 这种文本，也不要把两个键名塞进同一个值框——
+GitHub 不会解析，CI 会读不到而跳过校验。两个值都非空，live check 才会执行。
+
 之后每次 push，`verify-first-build` 会真实调用一次 `你好 → 维语` 并断言译文非空；
 没配 Secret 时该步骤自动跳过，门禁照常全绿。**Secret 变更本身不会触发运行**：
 配完两个值后，到 Actions 页对 `verify-first-build` 点一次 **Run workflow**（或任意 push 一次）
-即可完成首次真实校验。脚本会自动探测 `ug` / `uy` 语种码与
-毫秒 / 秒时间戳，把成功组合写进 `::notice::` 批注——官方文档的签名示例值与其
-`paramStr` 的 MD5 对不上（疑似示例密钥被替换过），真实规则由这一步定案。
-App 侧的小牛实现另有单元测试覆盖签名、请求体、重试与降级，**不发真实网络请求**。
+即可完成首次真实校验。脚本会优先试已验证组合，必要时再探测 `uy` / `ug` 与
+毫秒 / 秒，把成功组合写进 `::notice::` 批注。
+
+**run #22 实测结论**：`to=uy` + **毫秒时间戳**可用，`你好 → ياخشىمۇسىز`；
+`ug` 会返回空译文。App 默认语种码已改为 `uy`、时间戳用毫秒，其余组合只作兜底。
+官方文档的签名示例值与其 `paramStr` 的 MD5 对不上（疑似示例密钥被替换过），
+签名规则也由这一步真实验证定案。App 侧另有单元测试覆盖签名、请求体、重试与降级，
+**不发真实网络请求**。
 
 如需切回 Azure：设置页服务商选「Azure Translator」，填 Key 1（区域按需），
 并配置 Secret `AZURE_TRANSLATOR_KEY` / `AZURE_TRANSLATOR_REGION`。

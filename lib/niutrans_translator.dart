@@ -6,6 +6,9 @@
 // （UTF-8 / GBK / URL-encode 变体都不匹配，应是示例密钥被替换过），
 // 因此这里严格按文档明文规则实现，由 CI 的 live check 用真实密钥校验。
 //
+// run #22 实测结论：to=uy + 毫秒时间戳可用（你好 → ياخشىمۇسىز），
+// `ug` 与「秒」的组合只作兜底；语种码默认值在 translation_config.dart。
+//
 // 网络层可注入，单元测试不发真实请求；失败一律抛异常交给 FallbackTranslator。
 
 import 'dart:convert';
@@ -47,7 +50,7 @@ class _Variant {
   final bool millis;
 }
 
-/// 小牛翻译：zh ↔ ug/uy（维吾尔语）。
+/// 小牛翻译：zh ↔ uy/ug（维吾尔语）。
 class NiuTransTranslator extends Translator {
   NiuTransTranslator({
     required this.config,
@@ -62,7 +65,7 @@ class NiuTransTranslator extends Translator {
   static const String _provider = '小牛翻译';
   static const String _path = '/v2/text/translate';
   static const Map<String, String> _headers = <String, String>{
-    'Content-Type': 'application/json; charset=UTF-8',
+    'Content-Type': 'application/json',
   };
 
   String _code(Language language, String ugCode) =>
@@ -95,14 +98,16 @@ class NiuTransTranslator extends Translator {
       );
     }
 
+    // CI live check 已验证 uy + 毫秒，放首位保证正常路径只发一次请求；
+    // 其余组合用于服务端改版时兜底。网络异常不是 TranslationException，
+    // 会直接抛给降级链，不拖慢超时。
     final String primary =
-        config.ugCode.trim().isEmpty ? 'ug' : config.ugCode.trim();
-    final String alternate = primary == 'ug' ? 'uy' : 'ug';
-    // 语种码 ug / uy、时间戳毫秒 / 秒在文档里存在分歧：业务错误时换备选组合
-    // 再试一次；网络异常不是 TranslationException，直接抛给降级链，不拖慢超时。
+        config.ugCode.trim().isEmpty ? 'uy' : config.ugCode.trim();
+    final String alternate = primary == 'uy' ? 'ug' : 'uy';
     final List<_Variant> variants = <_Variant>[
       _Variant(primary, true),
-      _Variant(alternate, false),
+      _Variant(alternate, true),
+      _Variant(primary, false),
     ];
     String lastError = '';
     for (final _Variant variant in variants) {
@@ -112,7 +117,7 @@ class NiuTransTranslator extends Translator {
         lastError = error.message;
       }
     }
-    throw TranslationException('小牛翻译两次尝试均失败：$lastError');
+    throw TranslationException('小牛翻译所有组合均失败：$lastError');
   }
 
   Future<String> _post(
@@ -153,12 +158,9 @@ class NiuTransTranslator extends Translator {
     }
     final String text = (decoded['tgtText'] as String? ?? '').trim();
     if (text.isEmpty) {
-      return const Translation(
-        text: '',
-        provider: _provider,
-        found: false,
-        isDemo: false,
-      );
+      // 语种码或时间戳单位不匹配时接口可能只返回空 tgtText，
+      // 抛异常让 translate 换备选组合，而不是误判为「未找到译文」。
+      throw const TranslationException('小牛翻译返回空译文');
     }
     return Translation(
       text: text,

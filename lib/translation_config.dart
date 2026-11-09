@@ -43,8 +43,9 @@ class TranslationConfig {
       String.fromEnvironment('AZURE_TRANSLATOR_REGION');
   static const String _envEndpoint =
       String.fromEnvironment('TRANSLATOR_ENDPOINT');
+  // CI live check 实测：to=uy + 毫秒时间戳可用，ug 返回空译文。
   static const String _envUgCode =
-      String.fromEnvironment('NIUTRANS_UG_CODE', defaultValue: 'ug');
+      String.fromEnvironment('NIUTRANS_UG_CODE', defaultValue: 'uy');
   static const TranslationProvider _envProvider =
       bool.fromEnvironment('USE_AZURE_TRANSLATOR')
           ? TranslationProvider.azure

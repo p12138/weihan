@@ -41,7 +41,7 @@ class _FakeGateway extends TranslationGateway {
 TranslationConfig _config({
   String appId = 'unit-test-appid',
   String key = 'unit-test-key',
-  String ugCode = 'ug',
+  String ugCode = 'uy',
 }) =>
     TranslationConfig(
       provider: TranslationProvider.niuTrans,
@@ -61,7 +61,7 @@ NiuTransTranslator _translator(
 
 String _ok(String text) => jsonEncode(<String, Object>{
       'from': 'zh',
-      'to': 'ug',
+      'to': 'uy',
       'tgtText': text,
     });
 
@@ -98,6 +98,20 @@ void main() {
     );
   });
 
+  test('默认首选 CI 实测组合：uy + 毫秒时间戳', () async {
+    final _FakeGateway gateway = _FakeGateway(<String>[_ok('ياخشىمۇسىز')]);
+    final Translation result = await _translator(gateway).translate(
+      '你好',
+      Language.chinese,
+      Language.uyghur,
+    );
+    expect(result.text, 'ياخشىمۇسىز');
+    expect(result.found, isTrue);
+    expect(gateway.calls, 1);
+    expect(gateway.bodies.single['to'], 'uy');
+    expect((gateway.bodies.single['timestamp'] as String).length, 13);
+  });
+
   test('成功解析 tgtText，标记为真实译文', () async {
     final _FakeGateway gateway = _FakeGateway(<String>[
       _ok('ئەسسالامۇ ئەلەيكۇم'),
@@ -131,7 +145,7 @@ void main() {
     );
     final Map<String, dynamic> body = gateway.bodies.single;
     expect(body['from'], 'zh');
-    expect(body['to'], 'ug');
+    expect(body['to'], 'uy');
     expect(body['appId'], 'unit-test-appid');
     expect(body['srcText'], '谢谢');
     expect((body['timestamp'] as String).length, greaterThan(9));
@@ -139,25 +153,25 @@ void main() {
     expect(body.containsKey('apikey'), isFalse);
   });
 
-  test('反向翻译使用 ug → zh', () async {
+  test('反向翻译使用 uy → zh', () async {
     final _FakeGateway gateway = _FakeGateway(<String>[_ok('你好')]);
     await _translator(gateway).translate(
       'ئەسسالامۇ ئەلەيكۇم',
       Language.uyghur,
       Language.chinese,
     );
-    expect(gateway.bodies.single['from'], 'ug');
+    expect(gateway.bodies.single['from'], 'uy');
     expect(gateway.bodies.single['to'], 'zh');
   });
 
-  test('维语代码可配置为 uy', () async {
+  test('维语代码仍可配置为 ug', () async {
     final _FakeGateway gateway = _FakeGateway(<String>[_ok('رەھمەت')]);
-    await _translator(gateway, config: _config(ugCode: 'uy')).translate(
+    await _translator(gateway, config: _config(ugCode: 'ug')).translate(
       '谢谢',
       Language.chinese,
       Language.uyghur,
     );
-    expect(gateway.bodies.single['to'], 'uy');
+    expect(gateway.bodies.single['to'], 'ug');
   });
 
   test('返回业务错误码时换备选组合再试一次', () async {
@@ -172,9 +186,9 @@ void main() {
     );
     expect(result.found, isTrue);
     expect(gateway.calls, 2);
-    expect(gateway.bodies.first['to'], 'ug');
-    expect(gateway.bodies.last['to'], 'uy');
-    expect((gateway.bodies.last['timestamp'] as String).length, 10);
+    expect(gateway.bodies.first['to'], 'uy');
+    expect(gateway.bodies.last['to'], 'ug');
+    expect((gateway.bodies.last['timestamp'] as String).length, 13);
   });
 
   test('网络异常不重试，由降级链回落到演示词库', () async {
@@ -220,20 +234,48 @@ void main() {
     expect(gateway.calls, 0);
   });
 
-  test('空译文返回 found=false，不伪造结果', () async {
-    final _FakeGateway gateway = _FakeGateway(<String>[_ok('   ')]);
+  test('空译文会换备选组合再试，不伪造结果', () async {
+    final _FakeGateway gateway = _FakeGateway(<String>[
+      _ok('   '),
+      _ok('رەھمەت'),
+    ]);
     final Translation result = await _translator(gateway).translate(
       '你好',
       Language.chinese,
       Language.uyghur,
     );
-    expect(result.found, isFalse);
-    expect(result.text, isEmpty);
-    expect(gateway.calls, 1);
+    expect(result.found, isTrue);
+    expect(result.text, 'رەھمەت');
+    expect(gateway.calls, 2);
+    expect(gateway.bodies.first['to'], 'uy');
+    expect(gateway.bodies.last['to'], 'ug');
+  });
+
+  test('所有组合均无译文时抛异常，由降级链兜底', () async {
+    final _FakeGateway gateway = _FakeGateway(<String>[
+      _ok('   '),
+      _ok('   '),
+      _ok('   '),
+    ]);
+    final Translator chain = FallbackTranslator(<Translator>[
+      _translator(gateway),
+      const DemoTranslator(),
+    ]);
+    final Translation result = await chain.translate(
+      '你好',
+      Language.chinese,
+      Language.uyghur,
+    );
+    expect(gateway.calls, 3);
+    expect(result.provider, '演示词库');
   });
 
   test('返回结构异常时抛出 TranslationException', () async {
-    final _FakeGateway gateway = _FakeGateway(<String>['[1, 2]', '[1, 2]']);
+    final _FakeGateway gateway = _FakeGateway(<String>[
+      '[1, 2]',
+      '[1, 2]',
+      '[1, 2]',
+    ]);
     await expectLater(
       _translator(gateway).translate(
         '你好',
@@ -242,7 +284,7 @@ void main() {
       ),
       throwsA(isA<TranslationException>()),
     );
-    expect(gateway.calls, 2);
+    expect(gateway.calls, 3);
   });
 
   test('切换服务商会同步改变可用状态与默认终结点', () {

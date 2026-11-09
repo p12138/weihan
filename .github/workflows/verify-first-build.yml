@@ -99,10 +99,11 @@ jobs:
           app_id = os.environ['NIUTRANS_APP_ID']
           api_key = os.environ['NIUTRANS_API_KEY']
           url = 'https://api.niutrans.com/v2/text/translate'
-          preferred = (os.environ.get('NIUTRANS_UG_CODE') or 'ug').strip()
+          # run #22 实测可用组合为 to=uy + 毫秒时间戳，故默认优先 uy。
+          preferred = (os.environ.get('NIUTRANS_UG_CODE') or 'uy').strip()
           # 官方文档的语种码（ug / uy）与时间戳单位（毫秒 / 秒）存在分歧，
           # 这里逐组合实测，把可用组合写进批注，便于零凭证排错。
-          codes = list(dict.fromkeys([preferred, 'ug', 'uy']))
+          codes = list(dict.fromkeys([preferred, 'uy', 'ug']))
           attempts = []
           for code in codes:
               for millis in (True, False):
