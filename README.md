@@ -7,9 +7,11 @@
 
 > **2026-11-09 更新**：工具链与双端出包链路已全部验证通过（Android 真机试装、iOS 未签名 IPA 重签装机均正常）。
 > `lib/` 已有对话 UI + 可插拔 `Translator` / `SpeechPort` 接口 + 离线演示词库，
-> 并已接入 **Azure Translator 文本翻译**（`zh-Hans ↔ ug`）：默认不启用，在 App 设置里填 Key 即可翻译任意句子，
-> 云端失败自动回落到 12 句演示词库，不会卡住。语音识别 / 合成仍未接入，按钮明确禁用。
-> 接入新后端只需新增 `Translator` 实现或改 `buildDefaultTranslator()`，界面与状态层无需改动。
+> 并已接入 **小牛翻译文本翻译**（`zh ↔ ug`）：不用绑卡、个人 0 元，默认不启用，
+> 在 App 设置里填 APPID / API-KEY 即可翻译任意句子；云端失败自动回落到 12 句演示词库，不会卡住。
+> Azure Translator 实现保留为可选后端，设置页可随时切换（普通 Azure 账户注册需绑卡）。
+> 语音识别 / 合成仍未接入，按钮明确禁用。
+> 接入新后端只需新增 `Translator` 实现并加进 `ConfigurableTranslator`，界面与状态层无需改动。
 
 ---
 
@@ -31,19 +33,23 @@
 
 | 路径 | 作用 |
 |---|---|
-| `pubspec.yaml` | 最小依赖；Dart 包名 `uyghur_interpreter`（合法标识符，中文名会让 `pub get` 直接失败） |
+| `pubspec.yaml` | 最小依赖（含 `crypto` 用于小牛签名）；Dart 包名 `uyghur_interpreter` |
 | `lib/main.dart` | 应用外壳 |
 | `lib/conversation.dart` | 领域模型、`Translator` / `SpeechPort` 端口、演示词库、降级链 |
-| `lib/azure_translator.dart` | Azure Translator v3.0 实现（可注入 HTTP 网关，失败抛异常交给降级链） |
-| `lib/translation_config.dart` | 运行时配置单例（Key / 区域 / 终结点），不落盘、不入库 |
+| `lib/translation_http.dart` | 共用 HTTP 网关抽象与 `TranslationException`，可注入便于单测 |
+| `lib/niutrans_translator.dart` | 小牛翻译 v2 实现（参数排序 + MD5 签名、语种码 / 时间戳备选重试） |
+| `lib/azure_translator.dart` | Azure Translator v3.0 实现，保留为可选后端 |
+| `lib/translation_config.dart` | 运行时配置单例（服务商 / APPID / API-KEY / 区域 / 终结点），不落盘、不入库 |
+| `lib/default_translator.dart` | `ConfigurableTranslator`：每次调用按当前配置重建降级链，切换后端无需重建页面 |
 | `lib/conversation_page.dart` | 对话 UI（维文自动 RTL、方向切换、云端设置对话框） |
 | `test/smoke_test.dart` | 首页渲染冒烟测试 |
 | `test/conversation_test.dart` | 领域模型 / 降级链 / 演示词库的 9 个单元测试 |
 | `test/conversation_page_test.dart` | 3 个 widget 交互测试，把「中文→维文」等真机验证过的行为固化成自动断言 |
+| `test/niutrans_translator_test.dart` | 14 个单测：签名、请求体、语种码、重试、降级、配置切换，全部用假网关不发网络 |
 | `test/azure_translator_test.dart` | 9 个单测：请求头、语言映射、区域、降级、异常，全部用假网关不发网络 |
-| `test/settings_test.dart` | 2 个 widget 测试：填入 / 清空 Key 后模式条切换 |
+| `test/settings_test.dart` | 2 个 widget 测试：填入 / 清空凭证后模式条切换 |
 | `analysis_options.yaml` / `.gitignore` | lint 规则；已排除 `*.jks` / `key.properties` / `*.p12` / `*.mobileprovision` |
-| `.github/workflows/verify-first-build.yml` | **push 即跑**的门禁（自检 → analyze → test → 可选 Azure 实测 → 补壳 → debug APK） |
+| `.github/workflows/verify-first-build.yml` | **push 即跑**的门禁（自检 → analyze → test → 可选小牛 / Azure 实测 → 补壳 → debug APK） |
 | `.github/workflows/auto-device-smoke.yml` | **push 即跑**的双端模拟器装包冒烟（无需本机 SDK、无需证书） |
 | `.github/workflows/selfuse-android.yml` | 手动出 Android APK；有 keystore 出 release，没有就明确降级 debug |
 | `.github/workflows/selfuse-ios.yml` | 手动出 iOS 包；无证书明确降级未签名 `.app` / `.ipa` |
@@ -68,13 +74,14 @@ push 之后自动跑：
 
 | 工作流 / job | 跑什么 | 在哪跑 | 你要做什么 |
 |---|---|---|---|
-| `verify-first-build` | 静态自检 / analyze / 单元 + widget 测试 / 可选 Azure 实测 / debug APK | ubuntu runner | 无 |
+| `verify-first-build` | 静态自检 / analyze / 单元 + widget 测试 / 可选小牛 · Azure 实测 / debug APK | ubuntu runner | 无 |
 | `auto-device-smoke` · `android-emulator` | `flutter build apk --debug --target-platform android-x64` → `adb install` → `am start` → 8 秒存活 + `FATAL EXCEPTION` 检查 + 截图 | Android 模拟器 (API 34) | 无 |
 | `auto-device-smoke` · `ios-simulator` | `flutter build ios --simulator --debug --no-codesign` → `simctl install/launch` → 崩溃报告检查 + 截图 | iOS Simulator | 无 |
 
 - **功能回归**由 `test/conversation_page_test.dart` 断言：输入「你好」出维文、未收录句不伪造译文、方向切换与语音按钮禁用。改代码后 CI 自动跑，不用手点。
 - **真机级可用性**由模拟器冒烟回答：能不能装、能不能开、会不会崩。不需要证书、不需要 Apple 账号，截图在 Artifacts 里可下载。
-- **云端链路**由 `test/azure_translator_test.dart`（假网关，纯逻辑）与可选的 `Azure Translator live check`（真实 API，需 Secret）共同覆盖。
+- **云端链路**由 `test/niutrans_translator_test.dart` / `test/azure_translator_test.dart`（假网关，纯逻辑）
+  与可选的 `NiuTrans live check` / `Azure Translator live check`（真实 API，需 Secret）共同覆盖。
 - **唯一仍需你本人的是 iOS 真机分发**：非越狱 iPhone 只能装 Apple 签名过的 IPA，签名需要你的 Apple 账号 / 证书 / 设备 UDID，CI 代劳不了。日常自用建议以 Android APK 为主。
 - macOS runner 按 10 倍计费，设备冒烟只在代码 / 配置变更时跑（`paths` 过滤），纯文档改动不跑；也可在 Actions 页手动 `Run workflow` 触发。
 
@@ -98,7 +105,7 @@ Token 只从环境变量读，用完立刻在 GitHub 撤销。
 
 ```
 verify_project.py --scope all → flutter pub get → flutter analyze → flutter test
-→ Azure live check（配置了 Secret 才跑）→ bootstrap.sh（补原生壳 / 权限）→ flutter build apk --debug
+→ NiuTrans / Azure live check（配置了 Secret 才跑）→ bootstrap.sh（补原生壳 / 权限）→ flutter build apk --debug
 ```
 
 `auto-device-smoke.yml` 同时跑双端模拟器冒烟。**两个都绿 = 逻辑与装包都正常**；
@@ -133,8 +140,9 @@ Android 直接发 APK 最省事；iOS 需决定是否开 Apple 账号。
 - 本机**没有 Flutter SDK / Android SDK / Xcode**，真编译、出包、模拟器测试一律交给 GitHub Actions；
   `verify-first-build` 已多次全绿，Android debug APK 与 iOS 未签名 IPA 均已产出并在真机验证，
   `auto-device-smoke` 负责后续每次改动的装包回归。本机可运行的是 `scripts/verify_project.py` 静态自检。
-- **文字翻译已可接云端**：配置 Key 后由 Azure Translator 翻译任意句子；未配置时仍只有 12 句演示词库，
-  任意句子会明确提示未收录，不会伪造译文。语音识别 / 语音合成都还没接。
+- **文字翻译已可接云端**：配置小牛 APPID / API-KEY 后可翻译任意句子（不用绑卡、0 元）；
+  未配置时仍只有 12 句演示词库，任意句子会明确提示未收录，不会伪造译文。
+  语音识别 / 语音合成都还没接。
 - `bootstrap.sh` 不配 Xcode Signing，需本地用 Xcode 打开 `ios/Runner.xcworkspace` 补 Team / Bundle ID。
 - iOS 硬约束没变：非越狱 iPhone 只能装 Apple 签名过的 IPA。零成本让朋友也能用，只有 PWA 一条路。
 - 所有证书 / keystore / p12 / 密码只给生成与配置方法，仓库内无任何明文凭证。
@@ -142,29 +150,36 @@ Android 直接发 APK 最省事；iOS 需决定是否开 Apple 账号。
 
 ---
 
-## 6. 云端翻译：Azure Translator F0（个人免费）
+## 6. 云端翻译：小牛翻译（不用绑卡、个人 0 元）
 
-配置和代码已经接好，**默认不启用**：没填 Key 时行为和以前一样（12 句演示词库）；
-填了 Key 才走云端，云端失败会自动回落到演示词库，不会卡住。
+**默认后端是小牛翻译，不是 Azure**。原因：普通 Azure 免费账户注册时，微软
+[官方免费账户 FAQ](https://azure.microsoft.com/free/free-account-faq/) 明确要求
+「电话号码 + 信用卡或借记卡（非预付）」做身份验证——卡不扣费，但没卡就开不了；
+小牛只需手机验证码，个人自用更省事。Azure 实现仍完整保留，设置页可随时切回。
+
+配置和代码已经接好，**默认不启用**：没填 APPID / API-KEY 时行为和以前一样
+（12 句演示词库）；填了才走云端，云端失败会自动回落到演示词库，不会卡住。
 
 ### 为什么可以放心用
 
-- **Free F0 是永久免费层**，不是 12 个月试用：每月 200 万字符 0 元
-  （[官方定价](https://azure.microsoft.com/pricing/details/cognitive-services/translator/)）。
-  个人聊天按每天 200 字算，一个月约 6000 字，占额度 0.3%。
-- **超额不会自动扣费**：F0 是硬上限，用完只返回 429/403，下月自动恢复；
-  只有误选 `Standard S1` 才会按 $10/百万字符计费。
-- 官方语言表含 `ug`（维吾尔语·阿拉伯字母），`zh-Hans ↔ ug` 双向可翻。
+- **不用绑卡**：手机号验证码注册；官方只写「开通 API 需绑定手机号」，
+  免费注册、免费开通「文本 API」，不需要银行卡。
+- **0 元且不会偷偷扣费**：每日赠送 100 积分 ≈ 20 万字符（1 积分 = 2000 字符），
+  完善资料再送 500 积分。没绑卡，额度用完只是停服，不存在自动转付费。
+  个人聊天按每天 200 字算，一天的免费额度够用 1000 天。
+- **维语是它的老本行**：东北大学 NLP 实验室团队，2014 年即上线维汉互译，
+  覆盖维 / 蒙 / 藏 / 哈 / 朝 / 彝 / 壮七大少数民族语言；新开源模型 NiuTrans.LMT
+  的语种表也明确含 `ug`。国内端点 `api.niutrans.com` 直连，不用代理。
+- **免费层限制**：5 QPS、单次 ≤ 5000 字符，自用完全够。
 
 ### 只做三件事
 
-1. Azure 门户创建「翻译工具 / Translator」**单服务**资源：订阅选自己的、资源组新建、
-   区域选**全球 / Global**、名称随意、定价层选 **Free F0**。
-   创建后到「密钥和终结点」复制 **Key 1**（若选了具体区域，一并记下区域代码如 `eastasia`）。
-2. 在 App 右上角点设置图标，填 Key 1，区域留空（全球区），点保存。
-   模式条会从「演示词库」变成「云端翻译」。
+1. 手机验证码注册 [niutrans.com](https://niutrans.com/) → 登录控制台 →
+   左侧「API 应用」→ 找到「文本 API」点「开通」→ 复制 **APPID** 和 **API-KEY**。
+2. 在 App 右上角点设置图标，服务商保持「小牛翻译」，填 APPID 和 API-KEY，
+   终结点留空，点保存。模式条会从「演示词库」变成「云端翻译」。
 3. 密钥只存在 App 进程内存里，**不落盘、不入库、不随包分发**；重装 App 后要重填一次。
-   绝不把 Key 写进代码、`pubspec.yaml`、CI 日志或任何会提交的文件。
+   绝不把 API-KEY 写进代码、`pubspec.yaml`、CI 日志或任何会提交的文件。
 
 ### CI 自动验证（不用你测）
 
@@ -172,20 +187,26 @@ Android 直接发 APK 最省事；iOS 需决定是否开 Apple 账号。
 
 | 名称 | 值 |
 |---|---|
-| `AZURE_TRANSLATOR_KEY` | 上面复制的 Key 1 |
-| `AZURE_TRANSLATOR_REGION` | 全球区留空；选了具体区域才填 |
+| `NIUTRANS_APP_ID` | 控制台复制的 APPID |
+| `NIUTRANS_API_KEY` | 控制台复制的 API-KEY |
 
-之后每次 push，`verify-first-build` 会真实调用一次 `你好 → ug` 并断言译文非空；
-没配 Secret 时该步骤自动跳过，门禁照常全绿。App 侧的 Azure 实现另有单元测试覆盖
-请求头、语言映射、降级与异常，**不发真实网络请求**。
+之后每次 push，`verify-first-build` 会真实调用一次 `你好 → 维语` 并断言译文非空；
+没配 Secret 时该步骤自动跳过，门禁照常全绿。脚本会自动探测 `ug` / `uy` 语种码与
+毫秒 / 秒时间戳，把成功组合写进 `::notice::` 批注——官方文档的签名示例值与其
+`paramStr` 的 MD5 对不上（疑似示例密钥被替换过），真实规则由这一步定案。
+App 侧的小牛实现另有单元测试覆盖签名、请求体、重试与降级，**不发真实网络请求**。
+
+如需切回 Azure：设置页服务商选「Azure Translator」，填 Key 1（区域按需），
+并配置 Secret `AZURE_TRANSLATOR_KEY` / `AZURE_TRANSLATOR_REGION`。
 
 ### 边界与后续
 
-- 这只解决**文字 → 文字**。Azure Speech 官方语言表未列出 `ug-CN`，维语听写与朗读
-  仍需讯飞 WebAPI；平台原生 SDK 也不含维语。
-- 全球版端点 `api.cognitive.microsofttranslator.com` 在国内连通性因网络而异，
-  CI 的 live check 会验证 runner 侧可用；手机端实际效果以自用网络为准。
-- 设置页的「终结点」一栏是为**阶段 2 的 NAS 代理**预留的：把 Key 挪进 NAS 环境变量、
-  代理对外暴露同样的 `/translate` 接口后，这里改成 NAS 地址即可，App 不用重新出包。
-  长远建议：**NAS 当入口**（密钥只有一份、换供应商不动 App），**Azure F0 当主力后端**
-  （译文质量最好），本地 NLLB 之类的离线模型只在额度耗尽时兜底。
+- 这只解决**文字 → 文字**。Azure Speech 官方语言表未列出 `ug-CN`，
+  Apple `SFSpeechRecognizer` 与讯飞平台 SDK 也不含维语；维语听写与朗读
+  仍需讯飞 WebAPI，那是同传阶段的事。
+- 设置页的「终结点」一栏是为**阶段 2 的 NAS 代理**预留的：把密钥挪进 NAS 环境变量、
+  代理对外暴露同样的翻译接口后，这里改成 NAS 地址即可，App 不用重新出包。
+  长远建议：**NAS 当入口**（密钥只有一份、换供应商不动 App），
+  **小牛 / Azure 当主力后端**，本地 NLLB 之类的离线模型只在服务不可用时兜底。
+- 免费额度是平台政策，长期可能调整；因为 `Translator` 是可插拔端口，
+  换供应商只需新增一个实现，不动界面和出包流程。

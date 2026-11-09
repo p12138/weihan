@@ -23,8 +23,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      # 可选：配置后 CI 会真实调用一次 Azure，验证 Key / 区域 / 中维语言对。
+      # 可选：配置后 CI 会真实调用一次对应服务，验证凭证 / 语种码 / 签名。
       # 未配置时对应步骤自动跳过，门禁照常全绿；密钥不进代码、不进产物。
+      # 默认后端是无需绑卡的小牛翻译；Azure 保留为可选后端。
+      NIUTRANS_APP_ID: ${{ secrets.NIUTRANS_APP_ID }}
+      NIUTRANS_API_KEY: ${{ secrets.NIUTRANS_API_KEY }}
+      NIUTRANS_UG_CODE: ${{ vars.NIUTRANS_UG_CODE }}
       AZURE_TRANSLATOR_KEY: ${{ secrets.AZURE_TRANSLATOR_KEY }}
       AZURE_TRANSLATOR_REGION: ${{ secrets.AZURE_TRANSLATOR_REGION }}
     steps:
@@ -80,6 +84,68 @@ jobs:
             echo "::error::${line}"
           done
           exit 1
+
+      - name: NiuTrans live check (optional)
+        if: ${{ env.NIUTRANS_APP_ID != '' && env.NIUTRANS_API_KEY != '' }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import sys
+          import time
+          import urllib.request
+
+          app_id = os.environ['NIUTRANS_APP_ID']
+          api_key = os.environ['NIUTRANS_API_KEY']
+          url = 'https://api.niutrans.com/v2/text/translate'
+          preferred = (os.environ.get('NIUTRANS_UG_CODE') or 'ug').strip()
+          # 官方文档的语种码（ug / uy）与时间戳单位（毫秒 / 秒）存在分歧，
+          # 这里逐组合实测，把可用组合写进批注，便于零凭证排错。
+          codes = list(dict.fromkeys([preferred, 'ug', 'uy']))
+          attempts = []
+          for code in codes:
+              for millis in (True, False):
+                  now = int(time.time() * 1000) if millis else int(time.time())
+                  params = {
+                      'from': 'zh',
+                      'to': code,
+                      'appId': app_id,
+                      'srcText': '你好',
+                      'timestamp': str(now),
+                      'apikey': api_key,
+                  }
+                  param_str = '&'.join(
+                      '%s=%s' % (k, params[k]) for k in sorted(params))
+                  body = {k: v for k, v in params.items() if k != 'apikey'}
+                  body['authStr'] = hashlib.md5(
+                      param_str.encode('utf-8')).hexdigest()
+                  req = urllib.request.Request(
+                      url,
+                      data=json.dumps(body, ensure_ascii=False).encode('utf-8'),
+                      headers={'Content-Type': 'application/json'},
+                      method='POST')
+                  try:
+                      with urllib.request.urlopen(req, timeout=25) as resp:
+                          data = json.loads(resp.read().decode('utf-8'))
+                  except Exception as exc:
+                      attempts.append('%s/%s -> 请求异常 %s' % (
+                          code, '毫秒' if millis else '秒', exc))
+                      continue
+                  text = ((data.get('tgtText') or '').strip()
+                          if isinstance(data, dict) else '')
+                  if text:
+                      msg = ('NiuTrans 实测成功：to=%s timestamp=%s 译文=%s'
+                             % (code, '毫秒' if millis else '秒', text))
+                      print(msg)
+                      print('::notice::' + msg)
+                      sys.exit(0)
+                  attempts.append('%s/%s -> %s' % (
+                      code, '毫秒' if millis else '秒', data))
+          for line in attempts:
+              print('::error::' + line)
+          sys.exit(1)
+          PY
 
       - name: Azure Translator live check (optional)
         if: ${{ env.AZURE_TRANSLATOR_KEY != '' }}

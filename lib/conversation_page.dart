@@ -1,15 +1,8 @@
 import 'package:flutter/material.dart';
 
-import 'azure_translator.dart';
 import 'conversation.dart';
+import 'default_translator.dart';
 import 'translation_config.dart';
-
-/// 默认翻译链：云端优先，未配置密钥或服务不可用时自动回落到演示词库。
-/// 终结点可配置，将来切到自建 NAS 代理时无需改动这里。
-Translator buildDefaultTranslator() => FallbackTranslator(<Translator>[
-      AzureTranslator(config: translationConfig),
-      const DemoTranslator(),
-    ]);
 
 /// 对话页：文字互译、方向切换、双语气泡（维文自动 RTL）。
 class ConversationPage extends StatefulWidget {
@@ -78,12 +71,12 @@ class _ConversationPageState extends State<ConversationPage> {
           _newMessage(result.text, direction.target, false),
         );
         _notice = result.isDemo
-            ? '演示词库命中 · 配置 Azure Key 后可翻译任意句子'
+            ? '演示词库命中 · 配置小牛翻译后可翻译任意句子'
             : '由 ${result.provider} 返回';
       } else {
-        _notice = translationConfig.hasCloudKey
-            ? '云端翻译未返回译文 · 请检查 Key / 区域 / 网络'
-            : '演示词库未收录这句 · 配置 Azure Key 后可翻译任意句子';
+        _notice = translationConfig.hasCloudConfig
+            ? '云端翻译未返回译文 · 请检查 APPID / API-KEY / 网络'
+            : '演示词库未收录这句 · 配置小牛翻译后可翻译任意句子';
       }
     });
   }
@@ -104,7 +97,7 @@ class _ConversationPageState extends State<ConversationPage> {
       return;
     }
     setState(() {
-      _notice = translationConfig.hasCloudKey
+      _notice = translationConfig.hasCloudConfig
           ? '云端翻译已启用 · 现在可以翻译任意句子'
           : '云端翻译已关闭 · 仅使用本地演示词库';
     });
@@ -135,7 +128,7 @@ class _ConversationPageState extends State<ConversationPage> {
           _ModeBanner(
             direction: direction,
             speechAvailable: widget.speech.isAvailable,
-            cloudEnabled: translationConfig.hasCloudKey,
+            cloudEnabled: translationConfig.hasCloudConfig,
           ),
           Expanded(child: _buildList()),
           if (_notice.isNotEmpty)
@@ -293,6 +286,7 @@ class MessageBubble extends StatelessWidget {
 }
 
 /// 云端翻译设置。密钥只保存在进程内存里，不落盘、不入库、不随包分发。
+/// 切换服务商后翻译链会在下一次发送时立即按新配置重建。
 class _SettingsDialog extends StatefulWidget {
   const _SettingsDialog();
 
@@ -301,13 +295,17 @@ class _SettingsDialog extends StatefulWidget {
 }
 
 class _SettingsDialogState extends State<_SettingsDialog> {
+  late final TextEditingController _appIdController;
   late final TextEditingController _keyController;
   late final TextEditingController _regionController;
   late final TextEditingController _endpointController;
+  late TranslationProvider _provider;
 
   @override
   void initState() {
     super.initState();
+    _provider = translationConfig.provider;
+    _appIdController = TextEditingController(text: translationConfig.appId);
     _keyController = TextEditingController(text: translationConfig.key);
     _regionController = TextEditingController(text: translationConfig.region);
     _endpointController =
@@ -316,6 +314,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
 
   @override
   void dispose() {
+    _appIdController.dispose();
     _keyController.dispose();
     _regionController.dispose();
     _endpointController.dispose();
@@ -323,12 +322,12 @@ class _SettingsDialogState extends State<_SettingsDialog> {
   }
 
   void _save() {
+    translationConfig.provider = _provider;
+    translationConfig.appId = _appIdController.text.trim();
     translationConfig.key = _keyController.text.trim();
     translationConfig.region = _regionController.text.trim();
-    final String endpoint = _endpointController.text.trim();
-    translationConfig.endpoint = endpoint.isEmpty
-        ? 'https://api.cognitive.microsofttranslator.com'
-        : endpoint.replaceAll(RegExp(r'/+$'), '');
+    translationConfig.endpoint =
+        _endpointController.text.trim().replaceAll(RegExp(r'/+$'), '');
     Navigator.of(context).pop();
   }
 
@@ -340,32 +339,74 @@ class _SettingsDialogState extends State<_SettingsDialog> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
+            Row(
+              children: <Widget>[
+                const Text('服务商'),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: DropdownButton<TranslationProvider>(
+                    key: const ValueKey<String>('provider-field'),
+                    value: _provider,
+                    isExpanded: true,
+                    items: TranslationProvider.values
+                        .map<DropdownMenuItem<TranslationProvider>>(
+                          (TranslationProvider item) =>
+                              DropdownMenuItem<TranslationProvider>(
+                            value: item,
+                            child: Text(item.label),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (TranslationProvider? value) {
+                      if (value != null) {
+                        setState(() {
+                          _provider = value;
+                        });
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
             TextField(
-              key: const ValueKey<String>('azure-key-field'),
+              key: const ValueKey<String>('niutrans-appid-field'),
+              controller: _appIdController,
+              decoration: const InputDecoration(
+                labelText: '小牛 APPID',
+                hintText: '控制台 → API应用',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              key: const ValueKey<String>('translator-key-field'),
               controller: _keyController,
               obscureText: true,
               decoration: const InputDecoration(
-                labelText: 'Azure Key 1',
+                labelText: 'API-KEY（Azure 填 Key 1）',
                 hintText: '留空则只用本地演示词库',
                 border: OutlineInputBorder(),
               ),
             ),
-            const SizedBox(height: 12),
-            TextField(
-              key: const ValueKey<String>('azure-region-field'),
-              controller: _regionController,
-              decoration: const InputDecoration(
-                labelText: '区域（全球区留空）',
-                hintText: '例如 eastasia',
-                border: OutlineInputBorder(),
+            if (_provider == TranslationProvider.azure) ...<Widget>[
+              const SizedBox(height: 12),
+              TextField(
+                key: const ValueKey<String>('translator-region-field'),
+                controller: _regionController,
+                decoration: const InputDecoration(
+                  labelText: 'Azure 区域（全球区留空）',
+                  hintText: '例如 eastasia',
+                  border: OutlineInputBorder(),
+                ),
               ),
-            ),
+            ],
             const SizedBox(height: 12),
             TextField(
-              key: const ValueKey<String>('azure-endpoint-field'),
+              key: const ValueKey<String>('translator-endpoint-field'),
               controller: _endpointController,
               decoration: const InputDecoration(
-                labelText: '终结点',
+                labelText: '终结点（留空用默认）',
                 hintText: '自建 NAS 代理时填 http://...',
                 border: OutlineInputBorder(),
               ),

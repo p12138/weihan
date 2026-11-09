@@ -12,6 +12,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  # 小牛翻译 v2 的 authStr 需要对参数串做 MD5；纯 Dart 实现，无平台通道。
+  crypto: ^3.0.3
 
 dev_dependencies:
   flutter_test:
