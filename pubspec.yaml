@@ -25,5 +25,28 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^4.0.0
 
+# CI 固定 Flutter 3.24.0 / Dart 3.5.x。record 5.2.0 与 audioplayers 6.1.0
+# 对各平台实现用的是 ^ 浮动约束，不做锁定会解析到 2026 年的新实现，实测后果：
+#   - record_android 1.5.x 的 build.gradle 引用 flutter 扩展 →
+#     旧版 Gradle 模板报 "compileSdkVersion is not specified"，Android 构建失败
+#   - record_platform_interface 1.4+/1.6 新增 RecordMethodChannelPlatformInterface
+#     抽象方法 → record_linux 0.x（被 <1.0.0 卡住）kernel 编译失败，iOS 构建失败
+#   - audioplayers_android 5.2+ 要求 compileSdk 35
+# 下面把整套插件族锁回 2024-11（record 5.2.0 发布时）的同期版本：接口与实现
+# 逐一对齐，且都兼容 Dart 3.5。升级 Flutter 前不要移除。
+dependency_overrides:
+  record_platform_interface: 1.2.0
+  record_android: 1.3.0
+  record_darwin: 1.2.2
+  record_web: 1.1.4
+  record_windows: 1.0.4
+  record_linux: 0.7.2
+  audioplayers_platform_interface: 7.0.0
+  audioplayers_android: 5.0.0
+  audioplayers_darwin: 6.0.0
+  audioplayers_web: 5.0.1
+  audioplayers_windows: 4.0.0
+  audioplayers_linux: 4.0.0
+
 flutter:
   uses-material-design: true

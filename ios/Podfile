@@ -40,5 +40,10 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
+    # record_darwin 1.2.x 等同期插件的 podspec 声明 iOS 11.0，Xcode 16 的
+    # Simulator 最低支持 12.0；统一抬到 12.0，消除 deployment target 警告。
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '12.0'
+    end
   end
 end

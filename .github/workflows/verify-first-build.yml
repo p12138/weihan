@@ -64,6 +64,16 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      # 无论后续原生构建成功与否都要能取回解析后的 lock，
+      # 回填到仓库后各机器与 CI 使用完全相同的插件版本。
+      - name: Upload resolved lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: pubspec-lock-resolved-${{ github.run_number }}
+          path: pubspec.lock
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Static analysis
         run: |
           set -o pipefail
