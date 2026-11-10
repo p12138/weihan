@@ -1,7 +1,7 @@
 name: uyghur_interpreter
 description: >-
-  维汉互译 App · 自用双端工程地基。仅用于验证 Flutter 3.24.0 / Java 17 /
-  Gradle 工具链能否产出 debug APK，不含任何业务代码。
+  维汉互译 App · 个人自用双端工程。小牛翻译负责文字互译，
+  讯飞 WebAPI 负责中维双向语音识别与朗读，密钥只在运行时填写。
 publish_to: 'none'
 version: 0.1.0+1
 
@@ -14,6 +14,11 @@ dependencies:
     sdk: flutter
   # 小牛翻译 v2 的 authStr 需要对参数串做 MD5；纯 Dart 实现，无平台通道。
   crypto: ^3.0.3
+  # 按住说话：16k / 16bit / 单声道 PCM 流，正好是讯飞 ASR 要求的格式。
+  # 锁 5.2.0：与 Flutter 3.24 / Dart 3.5 同期，Android minSdk 23、iOS 11+。
+  record: 5.2.0
+  # 朗读译文：播放讯飞 TTS 返回的 mp3。
+  audioplayers: 6.1.0
 
 dev_dependencies:
   flutter_test:

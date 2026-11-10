@@ -2,6 +2,7 @@
 // 不依赖 Flutter、网络或任何密钥；接入真实服务时只需新增端口实现。
 
 import 'dart:async';
+import 'dart:typed_data';
 
 /// 消息语言。
 enum Language {
@@ -191,17 +192,21 @@ class ConversationState {
       );
 }
 
-/// 语音端口。第一阶段明确不可用：按钮禁用，不假装录音或合成。
+/// 语音端口：把 PCM 16k/16bit/单声道录音识别成文字，把文字合成成音频字节。
+///
+/// 默认实现明确不可用（按钮禁用），不假装录音或合成；真实实现见
+/// `xfyun_speech.dart` 的 `XfyunSpeechPort`，可替换成 NAS 本地模型。
+/// 保持可实例化，是为了让「未配置凭证时按钮禁用」这一行为有最简默认值。
 class SpeechPort {
   const SpeechPort();
 
   bool get isAvailable => false;
 
-  Future<String> listen(Language language) async {
+  Future<String> listen(Uint8List audio, Language language) async {
     throw UnimplementedError('语音识别尚未接入');
   }
 
-  Future<void> speak(String text, Language language) async {
+  Future<Uint8List> speak(String text, Language language) async {
     throw UnimplementedError('语音合成尚未接入');
   }
 }

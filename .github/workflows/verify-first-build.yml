@@ -29,6 +29,11 @@ jobs:
       NIUTRANS_APP_ID: ${{ secrets.NIUTRANS_APP_ID }}
       NIUTRANS_API_KEY: ${{ secrets.NIUTRANS_API_KEY }}
       NIUTRANS_UG_CODE: ${{ vars.NIUTRANS_UG_CODE }}
+      XFYUN_APP_ID: ${{ secrets.XFYUN_APP_ID }}
+      XFYUN_API_KEY: ${{ secrets.XFYUN_API_KEY }}
+      XFYUN_API_SECRET: ${{ secrets.XFYUN_API_SECRET }}
+      XFYUN_UG_VCN: ${{ secrets.XFYUN_UG_VCN }}
+      XFYUN_ZH_VCN: ${{ vars.XFYUN_ZH_VCN }}
       AZURE_TRANSLATOR_KEY: ${{ secrets.AZURE_TRANSLATOR_KEY }}
       AZURE_TRANSLATOR_REGION: ${{ secrets.AZURE_TRANSLATOR_REGION }}
     steps:
@@ -161,6 +166,23 @@ jobs:
           else
             echo "::error::Dart 云端实测失败，完整输出如下："
             tail -n 60 /tmp/dart_live.log | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            exit 1
+          fi
+
+      # 语音链路同样直接跑 App 里的 Dart 实现：TTS 生成 16k PCM → ASR 识别闭环。
+      - name: Xfyun speech live check (optional)
+        if: ${{ env.XFYUN_APP_ID != '' && env.XFYUN_API_KEY != '' && env.XFYUN_API_SECRET != '' }}
+        run: |
+          set -o pipefail
+          if flutter test test/live_xfyun_test.dart --reporter expanded 2>&1 | tee /tmp/xfyun_live.log; then
+            grep 'Xfyun live check:' /tmp/xfyun_live.log | while IFS= read -r line; do
+              echo "::notice::${line}"
+            done
+          else
+            echo "::error::讯飞语音实测失败，完整输出如下："
+            tail -n 60 /tmp/xfyun_live.log | while IFS= read -r line; do
               echo "::error::${line}"
             done
             exit 1

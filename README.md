@@ -5,13 +5,12 @@
 > (`uyghur-chinese-translator-source.zip`) 经三轮核验**确实不在资料库、也不在本机**，
 > 因此本仓库从「先把构建工具链验证掉」的地基起步，现已长成可编译、可出包、可自动回归的工程。
 
-> **2026-11-09 更新**：工具链与双端出包链路已全部验证通过（Android 真机试装、iOS 未签名 IPA 重签装机均正常）。
-> `lib/` 已有对话 UI + 可插拔 `Translator` / `SpeechPort` 接口 + 离线演示词库，
-> 并已接入 **小牛翻译文本翻译**（`zh ↔ uy`，语种码由 CI 实测确定）：不用绑卡、个人 0 元，默认不启用，
-> 在 App 设置里填 APPID / API-KEY 即可翻译任意句子；云端失败自动回落到 12 句演示词库，不会卡住。
-> Azure Translator 实现保留为可选后端，设置页可随时切换（普通 Azure 账户注册需绑卡）。
-> 语音识别 / 合成仍未接入，按钮明确禁用。
-> 接入新后端只需新增 `Translator` 实现并加进 `ConfigurableTranslator`，界面与状态层无需改动。
+> **2026-11-10 更新**：文字互译（小牛翻译 `zh ↔ uy`）已真机验证可用；
+> **中维双向语音翻译现已接入讯飞 WebAPI**：说话 → 维语/中文识别 → 小牛翻译 → 维语/中文朗读。
+> 手机号注册 + 个人实名即可，**不需要银行卡**；免费额度够个人自用。
+> 未配置语音凭证时语音按钮明确禁用、朗读按钮不出现，不会假装能用；
+> 云端失败自动回落文字演示词库，不卡住。配置见 [第 7 节](#7-语音翻译讯飞-webapi免绑卡个人-0-元)。
+> Azure Translator 实现保留为可选文字后端（普通 Azure 账户注册需绑卡，本项目不用）。
 
 ---
 
@@ -33,23 +32,33 @@
 
 | 路径 | 作用 |
 |---|---|
-| `pubspec.yaml` | 最小依赖（含 `crypto` 用于小牛签名）；Dart 包名 `uyghur_interpreter` |
+| `pubspec.yaml` | 依赖：`crypto`（小牛签名）、`record`（录音）、`audioplayers`（播放）；Dart 包名 `uyghur_interpreter` |
 | `lib/main.dart` | 应用外壳 |
 | `lib/conversation.dart` | 领域模型、`Translator` / `SpeechPort` 端口、演示词库、降级链 |
 | `lib/translation_http.dart` | 共用 HTTP 网关抽象与 `TranslationException`，可注入便于单测 |
 | `lib/niutrans_translator.dart` | 小牛翻译 v2 实现（参数排序 + MD5 签名、语种码 / 时间戳备选重试） |
 | `lib/azure_translator.dart` | Azure Translator v3.0 实现，保留为可选后端 |
-| `lib/translation_config.dart` | 运行时配置单例（服务商 / APPID / API-KEY / 区域 / 终结点），不落盘、不入库 |
-| `lib/default_translator.dart` | `ConfigurableTranslator`：每次调用按当前配置重建降级链，切换后端无需重建页面 |
-| `lib/conversation_page.dart` | 对话 UI（维文自动 RTL、方向切换、云端设置对话框） |
+| `lib/translation_config.dart` | 文字翻译配置单例（服务商 / APPID / API-KEY / 区域 / 终结点），不落盘、不入库 |
+| `lib/default_translator.dart` | `ConfigurableTranslator`：每次调用按当前配置重建降级链 |
+| `lib/speech_config.dart` | 讯飞语音凭证、维语/中文发音人 vcn、代理地址（内存，不落盘） |
+| `lib/xfyun_speech.dart` | HMAC-SHA256 签名 + wss 多语种 ASR / TTS 协议实现，传输层可注入 |
+| `lib/default_speech.dart` | `ConfigurableSpeechPort`：设置页保存凭证后立即生效，无需重新出包 |
+| `lib/device_audio.dart` | 录音（16k/16bit/单声道 PCM 流）与播放（mp3）平台端口 |
+| `lib/speech_pipeline.dart` | 三环编排：ASR → MT → TTS |
+| `lib/conversation_page.dart` | 对话 UI（维文 RTL、方向切换、语音按钮、译文朗读、云端设置） |
 | `test/smoke_test.dart` | 首页渲染冒烟测试 |
-| `test/conversation_test.dart` | 领域模型 / 降级链 / 演示词库的 9 个单元测试 |
-| `test/conversation_page_test.dart` | 3 个 widget 交互测试，把「中文→维文」等真机验证过的行为固化成自动断言 |
-| `test/niutrans_translator_test.dart` | 16 个单测：签名、请求体、语种码、重试、降级、配置切换，全部用假网关不发网络 |
-| `test/azure_translator_test.dart` | 9 个单测：请求头、语言映射、区域、降级、异常，全部用假网关不发网络 |
+| `test/conversation_test.dart` | 领域模型 / 降级链 / 演示词库单测 |
+| `test/conversation_page_test.dart` | widget 交互测试，把「中文→维文」等真机验证过的行为固化成断言 |
+| `test/niutrans_translator_test.dart` | 16 个单测：小牛签名、请求体、语种码、重试、降级（假网关） |
+| `test/azure_translator_test.dart` | 9 个单测：Azure 请求头、语言映射、区域、降级（假网关） |
 | `test/settings_test.dart` | 2 个 widget 测试：填入 / 清空凭证后模式条切换 |
+| `test/translation_http_test.dart` | 本机 HttpServer 回归中文请求体（修 latin1 问题） |
+| `test/xfyun_speech_test.dart` | 14 个语音协议单测：官方 HMAC 示例对齐、帧结构、解析、假 socket 闭环，不发网络 |
+| `test/speech_pipeline_test.dart` | 4 个三环编排单测 |
+| `test/live_niutrans_test.dart` | 真实凭证跑 App 的小牛 Dart 实现（无 Secret 自动跳过） |
+| `test/live_xfyun_test.dart` | 真实凭证跑 TTS→ASR 闭环（无 Secret 自动跳过） |
 | `analysis_options.yaml` / `.gitignore` | lint 规则；已排除 `*.jks` / `key.properties` / `*.p12` / `*.mobileprovision` |
-| `.github/workflows/verify-first-build.yml` | **push 即跑**的门禁（自检 → analyze → test → 可选小牛 / Azure 实测 → 补壳 → debug APK） |
+| `.github/workflows/verify-first-build.yml` | **push 即跑**的门禁（自检 → analyze → test → 可选小牛 / 讯飞 / Azure 实测 → 补壳 → debug APK） |
 | `.github/workflows/auto-device-smoke.yml` | **push 即跑**的双端模拟器装包冒烟（无需本机 SDK、无需证书） |
 | `.github/workflows/selfuse-android.yml` | 手动出 Android APK；有 keystore 出 release，没有就明确降级 debug |
 | `.github/workflows/selfuse-ios.yml` | 手动出 iOS 包；无证书明确降级未签名 `.app` / `.ipa` |
@@ -74,21 +83,25 @@ push 之后自动跑：
 
 | 工作流 / job | 跑什么 | 在哪跑 | 你要做什么 |
 |---|---|---|---|
-| `verify-first-build` | 静态自检 / analyze / 单元 + widget 测试 / 可选小牛 · Azure 实测 / debug APK | ubuntu runner | 无 |
+| `verify-first-build` | 静态自检 / analyze / 单元 + widget 测试 / 可选小牛 · 讯飞 · Azure 实测 / debug APK | ubuntu runner | 无 |
 | `auto-device-smoke` · `android-emulator` | `flutter build apk --debug --target-platform android-x64` → `adb install` → `am start` → 8 秒存活 + `FATAL EXCEPTION` 检查 + 截图 | Android 模拟器 (API 34) | 无 |
 | `auto-device-smoke` · `ios-simulator` | `flutter build ios --simulator --debug --no-codesign` → `simctl install/launch` → 崩溃报告检查 + 截图 | iOS Simulator | 无 |
 
-- **功能回归**由 `test/conversation_page_test.dart` 断言：输入「你好」出维文、未收录句不伪造译文、方向切换与语音按钮禁用。改代码后 CI 自动跑，不用手点。
+- **功能回归**由 `test/conversation_page_test.dart` 断言：输入「你好」出维文、未收录句不伪造译文、方向切换与语音按钮在未配置时禁用。改代码后 CI 自动跑，不用手点。
+- **语音协议**由 `test/xfyun_speech_test.dart`（官方 HMAC 示例对齐、帧结构、响应解析、假 socket 闭环）与
+  `test/speech_pipeline_test.dart`（三环顺序与失败分支）覆盖，全部不发真实网络。
 - **真机级可用性**由模拟器冒烟回答：能不能装、能不能开、会不会崩。不需要证书、不需要 Apple 账号，截图在 Artifacts 里可下载。
-- **云端链路**由 `test/niutrans_translator_test.dart` / `test/azure_translator_test.dart`（假网关，纯逻辑）
-  与可选的 `NiuTrans live check` / `Azure Translator live check`（真实 API，需 Secret）共同覆盖。
+- **云端链路**由 `NiuTrans live check`（Python）、`Dart live check`（App 的 Dart 实现）、
+  `Xfyun speech live check`（TTS→ASR 闭环）、`Azure Translator live check` 共同覆盖，
+  都只在对应 Secret 非空时运行。
 - **唯一仍需你本人的是 iOS 真机分发**：非越狱 iPhone 只能装 Apple 签名过的 IPA，签名需要你的 Apple 账号 / 证书 / 设备 UDID，CI 代劳不了。日常自用建议以 Android APK 为主。
 - macOS runner 按 10 倍计费，设备冒烟只在代码 / 配置变更时跑（`paths` 过滤），纯文档改动不跑；也可在 Actions 页手动 `Run workflow` 触发。
 
 > **关于「用平台 SDK 做语音」**：Android / iOS 系统原生语音识别都不支持维吾尔语
 > （Apple `SFSpeechRecognizer.supportedLocales()` 不含 `ug`），讯飞官方也注明其 Android / iOS SDK
-> 只支持中英文和部分方言，维语仅 WebAPI 支持。所以真实语音要走**云 WebAPI**
-> （ASR → 翻译 → TTS），`Translator` / `SpeechPort` 端口正是为此预留的，装个原生 SDK 解决不了。
+> 只支持中英文和部分方言，维语仅 WebAPI 支持，Azure Speech 也没列 `ug-CN`。
+> 所以真实语音必须走**云 WebAPI**（ASR → 翻译 → TTS），现已按 `SpeechPort` 端口接入讯飞；
+> 装个原生 SDK 解决不了。
 
 ---
 
@@ -105,7 +118,8 @@ Token 只从环境变量读，用完立刻在 GitHub 撤销。
 
 ```
 verify_project.py --scope all → flutter pub get → flutter analyze → flutter test
-→ NiuTrans / Azure live check（配置了 Secret 才跑）→ bootstrap.sh（补原生壳 / 权限）→ flutter build apk --debug
+→ NiuTrans / Dart / Xfyun speech / Azure live check（配置了 Secret 才跑）
+→ bootstrap.sh（补原生壳 / 权限）→ flutter build apk --debug
 ```
 
 `auto-device-smoke.yml` 同时跑双端模拟器冒烟。**两个都绿 = 逻辑与装包都正常**；
@@ -132,6 +146,7 @@ Android 直接发 APK 最省事；iOS 需决定是否开 Apple 账号。
 - 原工程的 `bootstrap.sh` 会「备份还原业务源码、移除 `flutter create` 生成的模板 `test/widget_test.dart`」；本仓库的 `bootstrap.sh` 是幂等补齐版，不会覆盖已有 `lib/`，两者行为不冲突，但**别同时放两份同名脚本**。
 - 若原 `pubspec.yaml` 的 `environment.sdk` 与 Flutter 3.24.0 不兼容，或插件要求更高 `minSdk` / iOS deployment target，按首次编译修复手册逐条改。
 - 覆盖 `android/app/src/main/AndroidManifest.xml` / `ios/Runner/Info.plist` 时别丢掉 `RECORD_AUDIO` / `INTERNET` 与两个 iOS 用途说明。
+- 录音插件 `record 5.2.0` 要求 Android `minSdk 23`，`android/app/build.gradle` 已显式设置，别改回去。
 
 ---
 
@@ -140,9 +155,11 @@ Android 直接发 APK 最省事；iOS 需决定是否开 Apple 账号。
 - 本机**没有 Flutter SDK / Android SDK / Xcode**，真编译、出包、模拟器测试一律交给 GitHub Actions；
   `verify-first-build` 已多次全绿，Android debug APK 与 iOS 未签名 IPA 均已产出并在真机验证，
   `auto-device-smoke` 负责后续每次改动的装包回归。本机可运行的是 `scripts/verify_project.py` 静态自检。
-- **文字翻译已可接云端**：配置小牛 APPID / API-KEY 后可翻译任意句子（不用绑卡、0 元）；
-  未配置时仍只有 12 句演示词库，任意句子会明确提示未收录，不会伪造译文。
-  语音识别 / 语音合成都还没接。
+- **文字与语音都已可接云端**：小牛翻译负责任意句子互译（不用绑卡、0 元），
+  讯飞 WebAPI 负责中维双向听写与朗读。未配置凭证时：文字只有 12 句演示词库、
+  语音按钮禁用，都会明确提示，不会伪造结果。
+- **语音免费包有期限**：讯飞个人 0 元包有效期 3 个月，额度用完或到期只停服，不绑卡不会扣费；
+  长期方案见第 7 节末尾。维吾尔语 TTS 发音人需要在控制台单独开启，是否包含在免费包里以实测为准。
 - `bootstrap.sh` 不配 Xcode Signing，需本地用 Xcode 打开 `ios/Runner.xcworkspace` 补 Team / Bundle ID。
 - iOS 硬约束没变：非越狱 iPhone 只能装 Apple 签名过的 IPA。零成本让朋友也能用，只有 PWA 一条路。
 - 所有证书 / keystore / p12 / 密码只给生成与配置方法，仓库内无任何明文凭证。
@@ -242,12 +259,89 @@ Secret 验证 **App 里那份 Dart 实现**的 URI / 签名 / 请求体 / 响应
 
 ### 边界与后续
 
-- 这只解决**文字 → 文字**。Azure Speech 官方语言表未列出 `ug-CN`，
-  Apple `SFSpeechRecognizer` 与讯飞平台 SDK 也不含维语；维语听写与朗读
-  仍需讯飞 WebAPI，那是同传阶段的事。
+- 小牛这一环只解决**文字 → 文字**；语音的听写与朗读已由讯飞 WebAPI 接入，见第 7 节。
+  小牛自己的「语音翻译 API」是上传音频文件→异步查询→下载译文文件的流程（≤60 秒 / 2 MB），
+  不适合面对面对话，故不用作主链路。
 - 设置页的「终结点」一栏是为**阶段 2 的 NAS 代理**预留的：把密钥挪进 NAS 环境变量、
   代理对外暴露同样的翻译接口后，这里改成 NAS 地址即可，App 不用重新出包。
   长远建议：**NAS 当入口**（密钥只有一份、换供应商不动 App），
   **小牛 / Azure 当主力后端**，本地 NLLB 之类的离线模型只在服务不可用时兜底。
 - 免费额度是平台政策，长期可能调整；因为 `Translator` 是可插拔端口，
   换供应商只需新增一个实现，不动界面和出包流程。
+
+---
+
+## 7. 语音翻译：讯飞 WebAPI（免绑卡、个人 0 元）
+
+### 为什么是讯飞
+
+- 官方「大模型多语种语音识别」语种表**明确含维语 `ug`** 和中文 `zh`，短音频 ≤60 秒，
+  `wss://iat.cn-huabei-1.xf-yun.com/v1`，16k / 16bit / 单声道 PCM。
+- 官方「在线语音合成（流式版）」支持维吾尔语发音人（控制台「民族发音人」里可见，
+  官网音色叫「帕蒂古里」），`wss://tts-api.xfyun.cn/v2/tts`，小语种文本必须 `tte=UTF8`。
+- Azure Speech 未列 `ug-CN`，Apple `SFSpeechRecognizer` 不含 `ug`，讯飞平台 SDK 也不支持维语；
+  **只有 WebAPI 这条路能同时做维语听写与朗读**。
+- 手机号注册 + 个人实名，**不需要银行卡**；0 元包到期或额度用完只停服，不会扣费。
+
+### 免费额度（以官网当前政策为准）
+
+| 能力 | 个人免费包 | 备注 |
+|---|---|---|
+| 多语种语音识别 | 0.5 万次 / 3 个月 | 并发 2；中文识别另有 2 万次包，但接口不同 |
+| 在线语音合成 | 1 万次 / 3 个月 | 另「创建应用后默认每日 500 次」；赠送 5 个基础发音人 |
+
+> 维语发音人属于民族/小语种音色，**是否包含在免费包里要在控制台实测**；
+> 没开通时接口报 `11200`，此时中文朗读与双向识别仍可用，维语朗读会明确提示。
+> 3 个月后免费包到期，可续领活动包，或按本节末尾的 NAS 方案长期兜底。
+
+### 你要做的四步（都不用测试）
+
+1. 用手机号注册 [xfyun.cn](https://www.xfyun.cn/) 并完成**个人实名认证**（不需要银行卡）。
+2. 控制台新建应用，分别开通「大模型多语种语音识别」与「在线语音合成（流式版）」
+   两个 **0 元试用包**；在服务页复制 **APPID / APIKey / APISecret**（三者属于同一个应用）。
+3. 在「在线语音合成」→ 发音人管理里开启**维吾尔语（民族语言）发音人**，
+   复制它的参数值 `vcn`；中文发音人默认 `x4_xiaoyan`，一般不用改。
+4. App 右上角设置 → 语音区填 APPID / APIKey / APISecret / 维语 vcn，保存。
+   模式条会变成「语音已接入」，语音按钮启用；译文气泡右侧出现喇叭可重播。
+
+**用法**：点一下「点击说话」开始录音，说完再点一下；识别原文与译文各出一条气泡，
+译文自动朗读。方向切换按钮决定「中文→维语」还是「维语→中文」，两个方向都能听、都能念。
+
+### CI 自动验证（不用你测）
+
+在 Settings → Secrets and variables → Actions 里加：
+
+| 类型 | 名称 | 值 |
+|---|---|---|
+| Secret | `XFYUN_APP_ID` | 讯飞 APPID |
+| Secret | `XFYUN_API_KEY` | 讯飞 APIKey |
+| Secret | `XFYUN_API_SECRET` | 讯飞 APISecret（只用于本地签名） |
+| Secret | `XFYUN_UG_VCN` | 维语发音人 vcn（可选，用于验证维语合成与听写闭环） |
+| Variable | `XFYUN_ZH_VCN` | 中文发音人 vcn（可选，默认 `x4_xiaoyan`） |
+
+三个凭证非空时，`Xfyun speech live check` 会跑 `test/live_xfyun_test.dart`：
+用**同一份 App Dart 代码**让 TTS 生成 16k PCM，再把这段 PCM 喂回 ASR 识别，
+验证签名、语种码、帧结构与响应解析整条路径（这是上次 latin1 事故后定下的规矩：
+Python/curl 校验不能替代 Dart 实现）。维语发音人未开通只输出提示、不把门禁判红，
+因为那是账号授权问题，不是代码问题。**Secret 变更不触发运行**，配完点一次 Run workflow。
+
+### 排障
+
+| 提示里出现 | 含义 | 处理 |
+|---|---|---|
+| `合成失败 11200` | 维语发音人未开通 / vcn 填错 | 控制台开通民族发音人，复制正确 vcn 重填 |
+| `识别失败 10160` / `10165` | 免费包没领或已过期 | 产品页领 0 元包，或看第 5 节的长期方案 |
+| `HMAC signature does not match` | 签名/时钟不对 | 三个凭证必须来自同一应用；手机时间设为自动 |
+| `识别超时` / `网络异常` | 手机到讯飞端点不通 | 换网络，关掉全局代理 / VPN |
+| `语音失败 · 没有识别到语音` | 没录到声音 | 允许麦克风权限，靠近话筒，说话长一点 |
+
+密钥只存在进程内存，重装需重填；诊断信息会剥掉带鉴权参数的 URL，不泄露凭证。
+
+### 长期方案
+
+- **NAS 代理**：把 APISecret 挪到 NAS 环境变量，代理转发 wss；App 设置页「语音代理 wss 地址」
+  填代理地址即可，界面与出包流程不变，也避免凭证进 APK。
+- **完全零账号**：NAS 上跑 Meta MMS 的维语 ASR（`mms-1b-all`，含 `uig`）与
+  TTS（`facebook/mms-tts-uig-script_arabic`，CC-BY-NC 4.0，个人非商用可用），
+  或社区微调的维吾尔语 Whisper / OmniASR。代价是 1–4 GB 模型、CPU 推理数秒、手机要能连 NAS。
+  `SpeechPort` 是可插拔端口，换实现不动 UI；CI 无法验证 NAS 侧，需要单独部署。
