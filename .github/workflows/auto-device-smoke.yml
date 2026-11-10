@@ -58,7 +58,24 @@ jobs:
         run: bash scripts/bootstrap.sh
 
       - name: Build debug APK for x86_64 emulator
-        run: flutter build apk --debug --target-platform android-x64
+        run: |
+          set -o pipefail
+          if flutter build apk --debug --target-platform android-x64 2>&1 | tee /tmp/android_smoke_build.log; then
+            exit 0
+          fi
+          # 匿名访问看不到 job logs，把真实 Gradle / Dart 错误写进批注
+          python3 scripts/emit_build_error.py \
+            /tmp/android_smoke_build.log "Android 模拟器包构建"
+          exit 1
+
+      - name: Upload Android build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-smoke-build-log-${{ github.run_number }}
+          path: /tmp/android_smoke_build.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Enable KVM (hardware acceleration)
         run: |
@@ -118,7 +135,24 @@ jobs:
           fi
 
       - name: Build for iOS Simulator (no signing, no Apple account)
-        run: flutter build ios --simulator --debug --no-codesign
+        run: |
+          set -o pipefail
+          if flutter build ios --simulator --debug --no-codesign 2>&1 | tee /tmp/ios_smoke_build.log; then
+            exit 0
+          fi
+          # 匿名访问看不到 job logs，把真实 Xcode / CocoaPods 错误写进批注
+          python3 scripts/emit_build_error.py \
+            /tmp/ios_smoke_build.log "iOS 模拟器包构建"
+          exit 1
+
+      - name: Upload iOS build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-smoke-build-log-${{ github.run_number }}
+          path: /tmp/ios_smoke_build.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Install, launch and check for crashes
         run: bash scripts/device_smoke_ios.sh
