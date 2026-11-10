@@ -12,6 +12,13 @@
 > 云端失败自动回落文字演示词库，不卡住。配置见 [第 7 节](#7-语音翻译讯飞-webapi免绑卡个人-0-元)。
 > Azure Translator 实现保留为可选文字后端（普通 Azure 账户注册需绑卡，本项目不用）。
 
+> **2026-11-10 最新构建状态**（head `88c5089`，Flutter 3.24 + Gradle 8.4 / AGP 8.1.0 / Kotlin 1.9.24）：
+> `verify-first-build` **#32 全绿**，`auto-device-smoke` **#15 双端全绿**
+> （Android Emulator 与 iOS Simulator 均完成装包 → 启动 → 崩溃检查 → 截图，无需你动手）。
+> 语音版 `app-debug.apk`：189,013,837 字节，SHA-256
+> `2f8eee0ff184a56d4e454217807998fada3c65c8cb8e6eb3d85bb62f8d70b83c`。
+> 讯飞凭证尚未配置，`Xfyun speech live check` 保持 skipped；按第 7 节填好凭证后由 CI 自动验 TTS→ASR 闭环。
+
 ---
 
 ## 0. 一句话说明现在的状态
