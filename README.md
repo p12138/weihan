@@ -92,7 +92,7 @@ push 之后自动跑：
 
 | 工作流 / job | 跑什么 | 在哪跑 | 你要做什么 |
 |---|---|---|---|
-| `verify-first-build` | 静态自检 / analyze / 单元 + widget 测试 / 可选小牛 · 讯飞 · Azure 实测 / debug APK | ubuntu runner | 无 |
+| `verify-first-build` | 静态自检 / analyze / 单元 + widget 测试 / 可选小牛 · 讯飞 · 语音 E2E · Azure 实测 / debug APK | ubuntu runner | 无 |
 | `auto-device-smoke` · `android-emulator` | `flutter build apk --debug --target-platform android-x64` → `adb install` → `am start` → 8 秒存活 + `FATAL EXCEPTION` 检查 + 截图 | Android 模拟器 (API 34) | 无 |
 | `auto-device-smoke` · `ios-simulator` | `flutter build ios --simulator --debug --no-codesign` → `simctl install/launch` → 崩溃报告检查 + 截图 | iOS Simulator | 无 |
 
@@ -103,6 +103,12 @@ push 之后自动跑：
 - **云端链路**由 `NiuTrans live check`（Python）、`Dart live check`（App 的 Dart 实现）、
   `Xfyun speech live check`（TTS→ASR 闭环）、`Azure Translator live check` 共同覆盖，
   都只在对应 Secret 非空时运行。
+- **语音全链路零人工回归**由 `test/live_speech_e2e_test.dart` 承担，分两层：
+  ① 配齐 Secret 且 `E2E_LIVE=1` 时，用真实凭证让讯飞 TTS 合成 16k PCM 冒充麦克风录音，
+  再跑 App 真实端口的 ASR → 小牛 MT → TTS（中→维、维→中两个方向）；
+  ② 把上一层的**真实结果**回灌给 widget 测试，断言「点开始 → 点结束 → 出现识别气泡 + 译文气泡
+  → 自动朗读 → 点朗读按钮再播一次」。第二层不发网络、不需要凭证，因此每次 push 都跑，
+  改坏 UI 编排会立刻变红，不用人手点一遍。
 - **唯一仍需你本人的是 iOS 真机分发**：非越狱 iPhone 只能装 Apple 签名过的 IPA，签名需要你的 Apple 账号 / 证书 / 设备 UDID，CI 代劳不了。日常自用建议以 Android APK 为主。
 - macOS runner 按 10 倍计费，设备冒烟只在代码 / 配置变更时跑（`paths` 过滤），纯文档改动不跑；也可在 Actions 页手动 `Run workflow` 触发。
 
@@ -127,7 +133,7 @@ Token 只从环境变量读，用完立刻在 GitHub 撤销。
 
 ```
 verify_project.py --scope all → flutter pub get → flutter analyze → flutter test
-→ NiuTrans / Dart / Xfyun speech / Azure live check（配置了 Secret 才跑）
+→ NiuTrans / Dart / Xfyun speech / Speech E2E / Azure live check（配置了 Secret 才跑）
 → bootstrap.sh（补原生壳 / 权限）→ flutter build apk --debug
 ```
 
@@ -347,6 +353,17 @@ Python/curl 校验不能替代 Dart 实现）。维语发音人未开通只输�
 `diagnostic=` 为空。也就是说维语发音人已开通、维语听写可用，之前担心的
 `11200` 授权风险已排除；同轮小牛 Python / Dart 实测也照常通过。
 唯一告警是 GitHub Actions 的 Node.js 20 / setup-java v4 弃用提示，与代码无关、不判红。
+
+**从「验协议」升级到「验整条用法」**：`Speech E2E live check` 用同一组 Secret 跑
+`test/live_speech_e2e_test.dart`。CI 上没有麦克风，就让讯飞 TTS 先合成一段 16k PCM
+当作「录到的音」，再交给 App 真实的 `ConfigurableSpeechPort` + 小牛翻译链，
+跑完 ASR → MT → TTS 后把真实识别文本、真实译文、真实音频回灌给 widget 测试，
+自动点两下语音按钮、自动点朗读按钮并断言两条气泡与两次播放。
+因此「录音字节格式对不对、三环数据有没有正确流到 UI、朗读按钮是不是真能用」
+都由 CI 回答，不需要人手装包点按。UI 那一层不依赖凭证，每次 push 都会跑。
+边界说清楚：CI runner 无物理麦克风，`record` / `audioplayers` 的平台实现本身
+由双端模拟器冒烟覆盖「能装能开不崩」，真实采样与外放仍需设备；
+手机端填一次凭证是使用前的配置，不是测试。
 
 ### 排障
 

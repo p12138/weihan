@@ -198,6 +198,27 @@ jobs:
             exit 1
           fi
 
+      # 端到端：真实凭证跑完整三环（TTS 造 PCM 当录音 → ASR → 小牛 MT → TTS），
+      # 结果再回灌给 widget 测试，断言录音按钮 / 两条气泡 / 自动朗读 / 朗读按钮。
+      # 不设 E2E_LIVE 时同一文件只跑确定性 UI 回归，不消耗云端额度。
+      - name: Speech E2E live check (optional)
+        if: ${{ env.XFYUN_APP_ID != '' && env.XFYUN_API_KEY != '' && env.XFYUN_API_SECRET != '' && env.NIUTRANS_APP_ID != '' && env.NIUTRANS_API_KEY != '' }}
+        env:
+          E2E_LIVE: '1'
+        run: |
+          set -o pipefail
+          if flutter test test/live_speech_e2e_test.dart --reporter expanded 2>&1 | tee /tmp/e2e_live.log; then
+            grep 'E2E live check:' /tmp/e2e_live.log | while IFS= read -r line; do
+              echo "::notice::${line}"
+            done
+          else
+            echo "::error::语音端到端实测失败，完整输出如下："
+            tail -n 80 /tmp/e2e_live.log | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            exit 1
+          fi
+
       - name: Azure Translator live check (optional)
         if: ${{ env.AZURE_TRANSLATOR_KEY != '' }}
         run: |
