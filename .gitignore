@@ -18,6 +18,10 @@ android/key.properties
 android/app/selfuse.jks
 dist/
 
+# CI 编译期注入凭证的临时 JSON —— 只在 runner 的 /tmp 生成，绝不入库
+*bundle*defines*.json
+_*.bundle.json
+
 # ---------- 来自仓库初始化的通用规则 ----------
 .DS_Store
 Thumbs.db

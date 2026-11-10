@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
+import 'bundled_config.dart';
 import 'conversation.dart';
 import 'default_speech.dart';
 import 'default_translator.dart';
@@ -479,15 +480,21 @@ class _SettingsDialogState extends State<_SettingsDialog> {
   void initState() {
     super.initState();
     _provider = translationConfig.provider;
-    _appIdController = TextEditingController(text: translationConfig.appId);
-    _keyController = TextEditingController(text: translationConfig.key);
+    // 自带凭证的包里绝不能把内置密钥明文回填到输入框（手机屏幕会直接显示）。
+    final bool bundled = kHasBundledCredentials;
+    _appIdController =
+        TextEditingController(text: bundled ? '' : translationConfig.appId);
+    _keyController =
+        TextEditingController(text: bundled ? '' : translationConfig.key);
     _regionController = TextEditingController(text: translationConfig.region);
     _endpointController =
         TextEditingController(text: translationConfig.endpoint);
-    _xfAppIdController = TextEditingController(text: speechConfig.appId);
-    _xfApiKeyController = TextEditingController(text: speechConfig.apiKey);
+    _xfAppIdController =
+        TextEditingController(text: bundled ? '' : speechConfig.appId);
+    _xfApiKeyController =
+        TextEditingController(text: bundled ? '' : speechConfig.apiKey);
     _xfApiSecretController =
-        TextEditingController(text: speechConfig.apiSecret);
+        TextEditingController(text: bundled ? '' : speechConfig.apiSecret);
     _xfUgVcnController = TextEditingController(text: speechConfig.ugVcn);
     _xfZhVcnController = TextEditingController(text: speechConfig.zhVcn);
     _xfEndpointController =
@@ -510,15 +517,28 @@ class _SettingsDialogState extends State<_SettingsDialog> {
   }
 
   void _save() {
+    // 内置凭证模式下密钥输入框初始为空，留空代表「沿用内置值」；
+    // 只有用户主动输入才覆盖。否则一进设置页点保存就会把内置凭证清空。
+    final bool bundled = kHasBundledCredentials;
     translationConfig.provider = _provider;
-    translationConfig.appId = _appIdController.text.trim();
-    translationConfig.key = _keyController.text.trim();
+    if (!bundled || _appIdController.text.trim().isNotEmpty) {
+      translationConfig.appId = _appIdController.text.trim();
+    }
+    if (!bundled || _keyController.text.trim().isNotEmpty) {
+      translationConfig.key = _keyController.text.trim();
+    }
     translationConfig.region = _regionController.text.trim();
     translationConfig.endpoint =
         _endpointController.text.trim().replaceAll(RegExp(r'/+$'), '');
-    speechConfig.appId = _xfAppIdController.text.trim();
-    speechConfig.apiKey = _xfApiKeyController.text.trim();
-    speechConfig.apiSecret = _xfApiSecretController.text.trim();
+    if (!bundled || _xfAppIdController.text.trim().isNotEmpty) {
+      speechConfig.appId = _xfAppIdController.text.trim();
+    }
+    if (!bundled || _xfApiKeyController.text.trim().isNotEmpty) {
+      speechConfig.apiKey = _xfApiKeyController.text.trim();
+    }
+    if (!bundled || _xfApiSecretController.text.trim().isNotEmpty) {
+      speechConfig.apiSecret = _xfApiSecretController.text.trim();
+    }
     speechConfig.ugVcn = _xfUgVcnController.text.trim();
     speechConfig.zhVcn = _xfZhVcnController.text.trim();
     speechConfig.endpoint = _xfEndpointController.text.trim();
@@ -536,6 +556,18 @@ class _SettingsDialogState extends State<_SettingsDialog> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
+            if (kHasBundledCredentials)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Text(
+                    kBundledCredentialsNotice,
+                    key: const ValueKey<String>('bundled-config-notice'),
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ),
             // 配置摘要：截图即可确认包版本、服务商与终结点是否填错。
             Align(
               alignment: Alignment.centerLeft,

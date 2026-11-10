@@ -22,6 +22,13 @@
 > 跑通「中文→维文」和「维语→中文」两个方向的 ASR → 小牛 MT → TTS，
 > 再把真实文本回灌给 widget 测试自动点语音按钮与朗读按钮。测试环节零人工。
 > APK 本身仍不含任何凭证，装到手机后需在设置页填一次才会启用语音按钮（配置，非测试）。
+> 这条只针对 `verify-first-build` 出的**干净包**；下面第 8 节是另一种包。
+
+> **2026-11-11 补充（选定的第三个方向）**：新增 `selfuse-bundled-build` 工作流，
+> 由 CI 在编译期注入凭证，产出**自带凭证的自用包**——装到手机开箱即用，
+> 设置页一次都不用填。代价是凭证会进安装包二进制、反编译可提取，
+> 因此默认只在 **private 仓库**上传产物。详见
+> [第 8 节](#8-自带凭证自用包完全免手填仅自用)。
 
 ---
 
@@ -57,6 +64,9 @@
 | `lib/device_audio.dart` | 录音（16k/16bit/单声道 PCM 流）与播放（mp3）平台端口 |
 | `lib/speech_pipeline.dart` | 三环编排：ASR → MT → TTS |
 | `lib/conversation_page.dart` | 对话 UI（维文 RTL、方向切换、语音按钮、译文朗读、云端设置） |
+| `lib/bundled_config.dart` | 编译期「凭证已内置」标记（不含任何值），驱动设置页不回显密钥 |
+| `scripts/write_bundle_defines.py` | 从 CI 环境变量生成 `--dart-define-from-file` JSON，只打印键名 |
+| `.github/workflows/selfuse-bundled.yml` | 自带凭证自用包出包工作流（Android 自动 / iOS 手动可选） |
 | `test/smoke_test.dart` | 首页渲染冒烟测试 |
 | `test/conversation_test.dart` | 领域模型 / 降级链 / 演示词库单测 |
 | `test/conversation_page_test.dart` | widget 交互测试，把「中文→维文」等真机验证过的行为固化成断言 |
@@ -405,3 +415,59 @@ E2E UI 回归通过：录音启停 / 双气泡 / 自动朗读 / 朗读按钮
   TTS（`facebook/mms-tts-uig-script_arabic`，CC-BY-NC 4.0，个人非商用可用），
   或社区微调的维吾尔语 Whisper / OmniASR。代价是 1–4 GB 模型、CPU 推理数秒、手机要能连 NAS。
   `SpeechPort` 是可插拔端口，换实现不动 UI；CI 无法验证 NAS 侧，需要单独部署。
+
+---
+
+## 8. 自带凭证自用包（完全免手填，仅自用）
+
+这一节对应「连设置页那一次填写也省掉」的选择。**它改变了原先「密钥不进包」的约定**，
+只适用于本人自用的包，不能分发给任何人。
+
+### 怎么工作
+
+`selfuse-bundled.yml` 在 runner 上把 GitHub Secrets 写进一份临时 JSON
+（`scripts/write_bundle_defines.py`，0600、用完即删、只打印键名不打印值），
+再用 `flutter build apk --debug --dart-define-from-file=...` 注入。
+App 里 `String.fromEnvironment` 早就有对应入口，所以**源码仓库依旧没有任何凭证**：
+只有键名映射、Git 历史干净、`verify_project.py` 的硬编码扫描照常 PASS。
+
+注入后 `BUNDLED_SELFUSE=true`，设置页：
+
+- 顶部显示「凭证已内置于安装包，无需填写；如需更换可在此覆盖」；
+- 五个密钥输入框初始留空，**不把内置凭证明文显示在手机屏幕上**；
+- 留空直接点保存不会把内置值清空（否则语音按钮会莫名变灰）；
+- 想临时换账号，照常输入即可覆盖，仍是内存态、不落盘。
+
+CI 会先跑 `test/bundled_config_test.dart`（带同一份 define 文件）确认注入生效、
+不回显、保存不清空，再做原生构建，最后在 APK 里只搜索 `BUNDLED_SELFUSE` 这个**键名**
+确认配置进了产物（不读取、不打印任何凭证值）。
+
+### 三种包别拿混
+
+| 产物 | 出自 | 含凭证 | 用途 |
+|---|---|---|---|
+| `verify-debug-apk-*` | `verify-first-build` | 否 | 干净门禁包，装了要在设置页填一次；可安全给人 |
+| `weihan-selfuse-bundled-apk-*` | `selfuse-bundled-build` | **是** | 本人自用，开箱即用，**不要分发** |
+| `weihan-selfuse-bundled-simulator.ipa` | 同上（手动勾选 with_ios） | **是** | iOS 模拟器自用，未签名 |
+
+### 触发方式与唯一需要你做的一次操作
+
+- `lib/` / `pubspec` / 原生壳 / `scripts/` / 本工作流变更并 push 到 main 时**自动跑**；
+  也可在 Actions 页手动 `Run workflow`。想顺带出 iOS 包，勾 `with_ios`（macOS 计费分钟按 10 倍计）。
+- 产物名带 run number，保留 **3 天**，在对应 run 的 Artifacts 里下载。
+- **仓库当前是 public**：公开仓库的 Actions artifact 可被第三方零凭证代理下载，
+  直接传含凭证 APK 等于把密钥送出去。因此工作流默认在 public 时**只构建自检、不上传**，
+  并给出 `::warning::`。
+  - 推荐做法：GitHub 仓库 → **Settings → General → 最底部 Danger Zone →
+    Change repository visibility → Make private**，然后重跑一次本工作流即自动上传。
+  - 若你确认接受风险、不想转 private：在 **Settings → Secrets and variables → Actions →
+    Variables** 新建 `BUNDLE_ALLOW_PUBLIC` = `1`，public 仓库也会照常上传。
+
+### 必须接受的风险
+
+1. 凭证以明文形式编进 Dart snapshot / 原生二进制，**反编译可提取**；这层不是加密，也不是混淆保护。
+2. 任何拿到这个 APK/IPA 的人都能用你的讯飞与小牛额度，并可造成额度盗用或欠费。
+3. 建议：仓库转 private、产物只留 3 天、包只装在自己设备、不要备份到公有网盘；
+   一旦发现泄露，去讯飞与小牛控制台**重置 APIKey / APISecret**，再更新同名 Secrets 重跑即可。
+4. 想同时做到「完全免手填」和「凭证不进包」，只有第 7 节的 **NAS 代理**路线：
+   把 APISecret 放 NAS 环境变量，App 内置代理地址（地址不是密钥），由代理签名转发。

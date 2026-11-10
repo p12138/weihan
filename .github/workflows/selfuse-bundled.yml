@@ -1,0 +1,307 @@
+name: selfuse-bundled-build
+
+# 「自带凭证的自用包」：CI 在编译期把 Secrets 注入安装包，装到手机后开箱即用，
+# 设置页不用再填 APPID / APIKey / APISecret / vcn，语音按钮直接可用。
+#
+# 安全边界（务必先读 README「自带凭证自用包」一节）：
+#   * 凭证不写源码、不写 Git 历史、不出现在命令行参数与构建日志；
+#   * 但凭证会打进安装包二进制，反编译可提取，等同把密钥交给拿到包的人；
+#   * 因此默认只在 PRIVATE 仓库上传产物。public 仓库本轮只构建自检、不上传，
+#     避免含凭证的 Actions artifact 被第三方零凭证下载。若明确接受该风险，
+#     把仓库 Variable BUNDLE_ALLOW_PUBLIC 设为 1 即可在 public 仓库也上传。
+#
+# 与 verify-first-build.yml 的分工：
+#   * verify-first-build：无凭证的干净门禁包，push 必跑，可安全分发；
+#   * 本工作流：仅自用、含凭证的包，产物 retention 仅 3 天。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "lib/**"
+      - "pubspec.yaml"
+      - "pubspec.lock"
+      - "android/**"
+      - "ios/**"
+      - "scripts/**"
+      - ".github/workflows/selfuse-bundled.yml"
+  workflow_dispatch:
+    inputs:
+      with_ios:
+        description: "同时出 iOS 模拟器自带凭证包（消耗 macOS 计费分钟）"
+        type: boolean
+        default: false
+
+concurrency:
+  group: selfuse-bundled-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    name: 凭证与可见性检查
+    runs-on: ubuntu-latest
+    outputs:
+      upload: ${{ steps.decide.outputs.upload }}
+    env:
+      # 仅做存在性判断，不打印任何值。
+      NIUTRANS_APP_ID: ${{ secrets.NIUTRANS_APP_ID }}
+      NIUTRANS_API_KEY: ${{ secrets.NIUTRANS_API_KEY }}
+      XFYUN_APP_ID: ${{ secrets.XFYUN_APP_ID }}
+      XFYUN_API_KEY: ${{ secrets.XFYUN_API_KEY }}
+      XFYUN_API_SECRET: ${{ secrets.XFYUN_API_SECRET }}
+    steps:
+      - name: 必需 Secret 齐全
+        run: |
+          missing=0
+          for name in NIUTRANS_APP_ID NIUTRANS_API_KEY XFYUN_APP_ID XFYUN_API_KEY XFYUN_API_SECRET; do
+            if [ -z "${!name}" ]; then
+              echo "::error::缺少 Secret ${name}，请到 Settings → Secrets and variables → Actions 补齐"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::凭证不齐，拒绝产出「看似免配置实则不可用」的安装包"
+            exit 1
+          fi
+          echo "::notice::5 个必需 Secret 均已配置（未输出任何值）"
+
+      - name: 决定产物是否允许上传
+        id: decide
+        env:
+          REPO_PRIVATE: ${{ github.event.repository.private }}
+          ALLOW_PUBLIC: ${{ vars.BUNDLE_ALLOW_PUBLIC }}
+        run: |
+          if [ "$REPO_PRIVATE" = "true" ] || [ "$ALLOW_PUBLIC" = "1" ]; then
+            echo "upload=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::允许上传自带凭证产物（private 仓库或已显式放开）"
+          else
+            echo "upload=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::仓库仍是 public：本轮只构建自检，不上传含凭证的安装包。把仓库转为 private 后重跑即可自动出包；若确认接受风险，可设 Variable BUNDLE_ALLOW_PUBLIC=1。"
+          fi
+
+  bundled-apk:
+    name: Android 自带凭证 APK
+    needs: guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      NIUTRANS_APP_ID: ${{ secrets.NIUTRANS_APP_ID }}
+      NIUTRANS_API_KEY: ${{ secrets.NIUTRANS_API_KEY }}
+      NIUTRANS_UG_CODE: ${{ vars.NIUTRANS_UG_CODE }}
+      XFYUN_APP_ID: ${{ secrets.XFYUN_APP_ID }}
+      XFYUN_API_KEY: ${{ secrets.XFYUN_API_KEY }}
+      XFYUN_API_SECRET: ${{ secrets.XFYUN_API_SECRET }}
+      XFYUN_UG_VCN: ${{ secrets.XFYUN_UG_VCN }}
+      XFYUN_ZH_VCN: ${{ vars.XFYUN_ZH_VCN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter 3.24.0
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.0"
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Generate native shells
+        run: bash scripts/bootstrap.sh
+
+      - name: 生成编译期配置（只输出键名）
+        run: python3 scripts/write_bundle_defines.py /tmp/weihan_bundle_defines.json
+
+      # 先证明 Dart 侧真的读到了注入值，并回归「设置页不回显 / 保存不清空」，
+      # 再花几分钟做原生构建；避免构建完才发现注入链路有问题。
+      - name: 注入自检 + 设置页回归
+        run: |
+          set -o pipefail
+          if flutter test --timeout 90s --reporter expanded \
+              --dart-define-from-file=/tmp/weihan_bundle_defines.json \
+              test/bundled_config_test.dart 2>&1 | tee /tmp/bundled_config_test.log; then
+            echo "::notice::内置凭证注入自检通过：配置已就绪、设置页不回显密钥、直接保存不清空"
+          else
+            echo "::error::内置凭证注入自检失败，输出如下："
+            tail -n 60 /tmp/bundled_config_test.log | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            exit 1
+          fi
+
+      - name: Build 自带凭证 debug APK
+        run: |
+          set -o pipefail
+          for attempt in 1 2 3; do
+            echo "::group::flutter build apk (attempt ${attempt}/3)"
+            if flutter build apk --debug \
+                --dart-define-from-file=/tmp/weihan_bundle_defines.json \
+                2>&1 | tee /tmp/bundled_apk.log; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            python3 scripts/emit_build_error.py \
+              /tmp/bundled_apk.log "自带凭证 APK 构建" "${attempt}"
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::构建失败，10s 后重试（第 ${attempt}/3 次）"
+              sleep 10
+            fi
+          done
+          echo "::error::自带凭证 APK 连续 3 次构建失败"
+          exit 1
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundled-apk-build-log-${{ github.run_number }}
+          path: /tmp/bundled_apk.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      # 只在 APK 里找「键名 / 提示文案」，不找也绝不打印凭证值。
+      # 找不到只给 warning，不把门禁判红（Flutter 版本不同，snapshot 落点会变）。
+      - name: 确认编译期配置确实进入安装包
+        run: |
+          python3 - <<'PY'
+          import glob
+          import zipfile
+
+          apks = sorted(glob.glob('build/app/outputs/flutter-apk/*.apk'))
+          if not apks:
+              print('::error::没有找到构建产物 APK')
+              raise SystemExit(1)
+          path = apks[0]
+          marker = b'BUNDLED_SELFUSE'
+          hit = []
+          with zipfile.ZipFile(path) as zf:
+              for name in zf.namelist():
+                  if not name.endswith(('.so', '.bin', '.dat', '.json')):
+                      continue
+                  try:
+                      data = zf.read(name)
+                  except (RuntimeError, OSError):
+                      continue
+                  if marker in data:
+                      hit.append(name)
+          print('APK 内命中编译期标记的文件：%s' % (', '.join(hit) or '无'))
+          if hit:
+              print('::notice::已确认编译期配置打进 %s（只查键名，未读取任何凭证值）' % path.split('/')[-1])
+          else:
+              print('::warning::APK 内未搜索到 BUNDLED_SELFUSE 字面量；Dart 侧注入自检已通过，通常只是 snapshot 编码差异')
+          PY
+
+      - name: Upload 自带凭证 APK
+        if: ${{ needs.guard.outputs.upload == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: weihan-selfuse-bundled-apk-${{ github.run_number }}
+          path: build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: 公开仓库未上传产物
+        if: ${{ needs.guard.outputs.upload != 'true' }}
+        run: |
+          echo "::warning::自带凭证 APK 已构建并自检通过，但仓库为 public，为避免被匿名下载本轮不上传产物。转为 private 后重跑本工作流即可自动出包。"
+
+      - name: 清理 runner 临时凭证文件
+        if: always()
+        run: rm -f /tmp/weihan_bundle_defines.json
+
+  bundled-ios:
+    name: iOS 模拟器自带凭证包（手动可选）
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.with_ios }}
+    needs: guard
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      NIUTRANS_APP_ID: ${{ secrets.NIUTRANS_APP_ID }}
+      NIUTRANS_API_KEY: ${{ secrets.NIUTRANS_API_KEY }}
+      NIUTRANS_UG_CODE: ${{ vars.NIUTRANS_UG_CODE }}
+      XFYUN_APP_ID: ${{ secrets.XFYUN_APP_ID }}
+      XFYUN_API_KEY: ${{ secrets.XFYUN_API_KEY }}
+      XFYUN_API_SECRET: ${{ secrets.XFYUN_API_SECRET }}
+      XFYUN_UG_VCN: ${{ secrets.XFYUN_UG_VCN }}
+      XFYUN_ZH_VCN: ${{ vars.XFYUN_ZH_VCN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter 3.24.0
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.0"
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Generate native shells
+        run: bash scripts/bootstrap.sh
+
+      - name: Install CocoaPods dependencies
+        run: |
+          cd ios
+          test -f Podfile || { echo "::error::ios/Podfile 缺失"; exit 1; }
+          pod install --no-repo-update
+
+      - name: 生成编译期配置（只输出键名）
+        run: python3 scripts/write_bundle_defines.py /tmp/weihan_bundle_defines.json
+
+      - name: Build 自带凭证 iOS Simulator 包
+        run: |
+          set -o pipefail
+          if flutter build ios --simulator --debug --no-codesign \
+              --dart-define-from-file=/tmp/weihan_bundle_defines.json \
+              2>&1 | tee /tmp/bundled_ios.log; then
+            exit 0
+          fi
+          python3 scripts/emit_build_error.py \
+            /tmp/bundled_ios.log "自带凭证 iOS 构建"
+          exit 1
+
+      - name: 打包为未签名模拟器 IPA
+        run: |
+          mkdir -p dist/Payload
+          cp -R build/ios/iphonesimulator/Runner.app dist/Payload/
+          (cd dist && zip -qry weihan-selfuse-bundled-simulator.ipa Payload)
+          ls -lh dist/*.ipa
+
+      - name: Upload 自带凭证 iOS IPA
+        if: ${{ needs.guard.outputs.upload == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: weihan-selfuse-bundled-ipa-${{ github.run_number }}
+          path: dist/weihan-selfuse-bundled-simulator.ipa
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: 清理 runner 临时凭证文件
+        if: always()
+        run: rm -f /tmp/weihan_bundle_defines.json
+
+  summary:
+    name: 出包说明
+    needs: [guard, bundled-apk]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: 写入运行摘要
+        run: |
+          echo "### 自带凭证自用包" >> "$GITHUB_STEP_SUMMARY"
+          echo "凭证由 Secrets 在编译期注入，装包后无需在设置页填任何内容。" >> "$GITHUB_STEP_SUMMARY"
+          echo "产物仅在允许上传时出现在 Artifacts，保留 3 天。" >> "$GITHUB_STEP_SUMMARY"
+          echo "**注意**：凭证在安装包二进制中可被反编译提取，请勿分发此包。" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ needs.guard.outputs.upload }}" != "true" ]; then
+            echo "> 本轮仓库为 public，产物未上传；转 private 后重跑即可自动出包。" >> "$GITHUB_STEP_SUMMARY"
+          fi
