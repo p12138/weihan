@@ -101,9 +101,11 @@ push 之后自动跑：
   `test/speech_pipeline_test.dart`（三环顺序与失败分支）覆盖，全部不发真实网络。
 - **真机级可用性**由模拟器冒烟回答：能不能装、能不能开、会不会崩。不需要证书、不需要 Apple 账号，截图在 Artifacts 里可下载。
 - **云端链路**由 `NiuTrans live check`（Python）、`Dart live check`（App 的 Dart 实现）、
-  `Xfyun speech live check`（TTS→ASR 闭环）、`Azure Translator live check` 共同覆盖，
-  都只在对应 Secret 非空时运行。
-- **语音全链路零人工回归**由 `test/live_speech_e2e_test.dart` 承担，分两层：
+  `Xfyun speech live check`（TTS→ASR 闭环）、`Speech E2E live check`、`Azure Translator live check` 共同覆盖，
+  都只在对应 Secret 非空时运行。`Unit tests` 会**排除** `test/live_*.dart`：
+  真实云端偶发慢响应会撞上 `flutter test` 默认 30 秒超时（run #37 就因此误判红），
+  且重复跑会白耗免费额度；这些链路只由专门步骤跑，各自放宽到 90 / 120 / 180 秒。
+- **语音全链路零人工回归**由 `test/speech_e2e_test.dart` 承担，分两层：
   ① 配齐 Secret 且 `E2E_LIVE=1` 时，用真实凭证让讯飞 TTS 合成 16k PCM 冒充麦克风录音，
   再跑 App 真实端口的 ASR → 小牛 MT → TTS（中→维、维→中两个方向）；
   ② 把上一层的**真实结果**回灌给 widget 测试，断言「点开始 → 点结束 → 出现识别气泡 + 译文气泡
@@ -355,7 +357,7 @@ Python/curl 校验不能替代 Dart 实现）。维语发音人未开通只输�
 唯一告警是 GitHub Actions 的 Node.js 20 / setup-java v4 弃用提示，与代码无关、不判红。
 
 **从「验协议」升级到「验整条用法」**：`Speech E2E live check` 用同一组 Secret 跑
-`test/live_speech_e2e_test.dart`。CI 上没有麦克风，就让讯飞 TTS 先合成一段 16k PCM
+`test/speech_e2e_test.dart`。CI 上没有麦克风，就让讯飞 TTS 先合成一段 16k PCM
 当作「录到的音」，再交给 App 真实的 `ConfigurableSpeechPort` + 小牛翻译链，
 跑完 ASR → MT → TTS 后把真实识别文本、真实译文、真实音频回灌给 widget 测试，
 自动点两下语音按钮、自动点朗读按钮并断言两条气泡与两次播放。

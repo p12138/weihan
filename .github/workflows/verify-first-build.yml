@@ -90,7 +90,12 @@ jobs:
       - name: Unit tests
         run: |
           set -o pipefail
-          if flutter test --reporter expanded 2>&1 | tee /tmp/flutter_test.log; then
+          # live_* 会打真实云端：偶发慢响应会撞上 flutter test 默认 30s 超时，
+          # 白白把门禁判红，还重复消耗免费额度。它们只由下面各自的 live check
+          # 步骤单独跑（各自放宽超时）；这里只跑确定性单测 + widget 回归。
+          mapfile -t unit_tests < <(find test -maxdepth 1 -name '*_test.dart' ! -name 'live_*' -print | sort)
+          echo "本轮确定性单测：${unit_tests[*]}"
+          if flutter test --reporter expanded "${unit_tests[@]}" 2>&1 | tee /tmp/flutter_test.log; then
             exit 0
           fi
           # 匿名访问看不到 job logs，把测试输出写进批注便于排错
@@ -169,7 +174,7 @@ jobs:
         if: ${{ env.NIUTRANS_APP_ID != '' && env.NIUTRANS_API_KEY != '' }}
         run: |
           set -o pipefail
-          if flutter test test/live_niutrans_test.dart --reporter expanded 2>&1 | tee /tmp/dart_live.log; then
+          if flutter test --timeout 90s --reporter expanded test/live_niutrans_test.dart 2>&1 | tee /tmp/dart_live.log; then
             grep 'Dart live check:' /tmp/dart_live.log | while IFS= read -r line; do
               echo "::notice::${line}"
             done
@@ -186,7 +191,7 @@ jobs:
         if: ${{ env.XFYUN_APP_ID != '' && env.XFYUN_API_KEY != '' && env.XFYUN_API_SECRET != '' }}
         run: |
           set -o pipefail
-          if flutter test test/live_xfyun_test.dart --reporter expanded 2>&1 | tee /tmp/xfyun_live.log; then
+          if flutter test --timeout 120s --reporter expanded test/live_xfyun_test.dart 2>&1 | tee /tmp/xfyun_live.log; then
             grep 'Xfyun live check:' /tmp/xfyun_live.log | while IFS= read -r line; do
               echo "::notice::${line}"
             done
@@ -207,7 +212,7 @@ jobs:
           E2E_LIVE: '1'
         run: |
           set -o pipefail
-          if flutter test test/live_speech_e2e_test.dart --reporter expanded 2>&1 | tee /tmp/e2e_live.log; then
+          if flutter test --timeout 180s --reporter expanded test/speech_e2e_test.dart 2>&1 | tee /tmp/e2e_live.log; then
             grep 'E2E live check:' /tmp/e2e_live.log | while IFS= read -r line; do
               echo "::notice::${line}"
             done
