@@ -147,6 +147,13 @@ Android 直接发 APK 最省事；iOS 需决定是否开 Apple 账号。
 - 若原 `pubspec.yaml` 的 `environment.sdk` 与 Flutter 3.24.0 不兼容，或插件要求更高 `minSdk` / iOS deployment target，按首次编译修复手册逐条改。
 - 覆盖 `android/app/src/main/AndroidManifest.xml` / `ios/Runner/Info.plist` 时别丢掉 `RECORD_AUDIO` / `INTERNET` 与两个 iOS 用途说明。
 - 录音插件 `record 5.2.0` 要求 Android `minSdk 23`，`android/app/build.gradle` 已显式设置，别改回去。
+- **Android 工具链版本别回退**：`record_android 1.3.0` 自身以 AGP 8.5.2 / Kotlin 1.8.21 / Java 17 编译，Flutter 3.24 官方模板默认的 AGP 7.3.0 + Kotlin 1.7.10 会同时报
+  `Module was compiled with an incompatible version of Kotlin`（旧编译器读不懂 kotlin-stdlib 1.9.x 元数据）和
+  `D8: Sealed classes are not supported as program classes`（旧 R8 不认 Java 17 sealed 类）。
+  本仓库把 `android/settings.gradle` 抬到 **AGP 8.1.0 + Kotlin 1.9.24**，Gradle 抬到 **8.4**，`android/app/build.gradle` 统一 **Java 17**。
+  注意只升到 AGP 7.4.2 仍不够：它的 R8 还是无法 dex `kotlin-stdlib 1.9.24` / `annotation-jvm 1.9.1`（`D8: com.android.tools.r8.kotlin.H`）。
+- `pubspec.yaml` 的 12 条 `dependency_overrides` 把 `record` / `audioplayers` 各平台实现锁在 Flutter 3.24 同期版本（2024-11），
+  `pubspec.lock` 已回填；**升级 Flutter 之前不要移除**，否则浮动约束会把平台实现解析到两年后的新版本，出现「analyze / test 全绿、双端 build 全红」。
 
 ---
 
