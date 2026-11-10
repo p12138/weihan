@@ -12,12 +12,14 @@
 > 云端失败自动回落文字演示词库，不卡住。配置见 [第 7 节](#7-语音翻译讯飞-webapi免绑卡个人-0-元)。
 > Azure Translator 实现保留为可选文字后端（普通 Azure 账户注册需绑卡，本项目不用）。
 
-> **2026-11-10 最新构建状态**（head `88c5089`，Flutter 3.24 + Gradle 8.4 / AGP 8.1.0 / Kotlin 1.9.24）：
-> `verify-first-build` **#32 全绿**，`auto-device-smoke` **#15 双端全绿**
+> **2026-11-11 最新构建状态**（head `e5af350`，Flutter 3.24 + Gradle 8.4 / AGP 8.1.0 / Kotlin 1.9.24）：
+> `verify-first-build` **#34 全绿**（含讯飞语音真实链路），`auto-device-smoke` **#15 双端全绿**
 > （Android Emulator 与 iOS Simulator 均完成装包 → 启动 → 崩溃检查 → 截图，无需你动手）。
 > 语音版 `app-debug.apk`：189,013,837 字节，SHA-256
 > `2f8eee0ff184a56d4e454217807998fada3c65c8cb8e6eb3d85bb62f8d70b83c`。
-> 讯飞凭证尚未配置，`Xfyun speech live check` 保持 skipped；按第 7 节填好凭证后由 CI 自动验 TTS→ASR 闭环。
+> **讯飞凭证已配置且实测通过**：中文与维语的 TTS→ASR 闭环都在 CI 跑通（详见第 7 节），
+> 至此 ASR → 小牛 MT → TTS 三环全部有真实凭证验证。APK 本身仍不含任何凭证，
+> 装到手机后需在设置页填一次才会启用语音按钮。
 
 ---
 
@@ -338,6 +340,13 @@ Secret 验证 **App 里那份 Dart 实现**的 URI / 签名 / 请求体 / 响应
 验证签名、语种码、帧结构与响应解析整条路径（这是上次 latin1 事故后定下的规矩：
 Python/curl 校验不能替代 Dart 实现）。维语发音人未开通只输出提示、不把门禁判红，
 因为那是账号授权问题，不是代码问题。**Secret 变更不触发运行**，配完点一次 Run workflow。
+
+**2026-11-11 实测结果（`verify-first-build` #34，`workflow_dispatch` 全绿）**：凭证配齐后
+`Xfyun speech live check` 由 skipped 转为 success，真实输出为「中文合成 27732 字节 →
+中文识别结果=你好。」「维语合成 32000 字节 → 维语识别结果=ياخشىمۇسىز」，
+`diagnostic=` 为空。也就是说维语发音人已开通、维语听写可用，之前担心的
+`11200` 授权风险已排除；同轮小牛 Python / Dart 实测也照常通过。
+唯一告警是 GitHub Actions 的 Node.js 20 / setup-java v4 弃用提示，与代码无关、不判红。
 
 ### 排障
 
