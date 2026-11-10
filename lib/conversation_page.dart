@@ -273,7 +273,7 @@ class _ConversationPageState extends State<ConversationPage> {
     );
   }
 
-  Widget _buildList(SpeakCallback? onSpeak) {
+  Widget _buildList({SpeakCallback? onSpeak}) {
     if (_state.messages.isEmpty) {
       return const Center(
         child: Padding(
