@@ -1,149 +1,60 @@
-// 语音翻译端到端回归：把「点一下说话 → 再点结束 → 出译文 → 朗读」整条链路自动化。
+// 语音 UI 端到端回归：自动点「开始说话 / 结束」、检查两条气泡与两次朗读。
 //
-// 分两层，都不需要真人参与：
-//   1) E2E_LIVE=1 且凭证齐全时，用真实凭证跑 App 的真实端口与翻译链：
-//      讯飞 TTS 先合成 16k PCM 冒充麦克风输入，再走 ASR → 小牛 MT → TTS。
-//      这样连「录音字节格式是否真能被识别」也一并验证，而不只是验协议帧。
-//   2) 无论有没有凭证，都用上一层的结果（或固定脚本数据）驱动 widget 测试，
-//      断言开始/结束录音、两条气泡、自动朗读、手动朗读按钮真实生效。
-//
-// 之所以拆两层：widget 测试跑在 fake async 里，真实 WebSocket 不会完成；
-// 而只用假实现又验不到云端。两层相加 = 真实服务 + 真实 UI 编排，且 CI 稳定。
-// 凭证只从 CI 环境变量读取，不写仓库、不进产物、不打印、不进批注。
+// 这个文件里**只有 testWidgets**，不发任何网络请求，所以每次 push 都能稳定跑。
+// 真实云端三环在 test/live_speech_pipeline_test.dart（不能混进本文件，否则
+// TestWidgetsFlutterBinding 的 fake async 会让真实 WebSocket 永远等不到完成）。
+// 若上一层的真实结果文件存在，就用真实识别文本 / 译文回放给 UI；
+// 不存在（本地开发、普通 push）则用固定脚本数据，行为完全等价。
 
-import 'dart:io' show HttpOverrides, Platform;
+import 'dart:convert' show jsonDecode;
+import 'dart:io' show File;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:uyghur_interpreter/conversation.dart';
 import 'package:uyghur_interpreter/conversation_page.dart';
-import 'package:uyghur_interpreter/default_speech.dart';
-import 'package:uyghur_interpreter/default_translator.dart';
 import 'package:uyghur_interpreter/device_audio.dart';
-import 'package:uyghur_interpreter/speech_config.dart';
-import 'package:uyghur_interpreter/speech_pipeline.dart';
-import 'package:uyghur_interpreter/translation_config.dart';
-import 'package:uyghur_interpreter/xfyun_speech.dart';
+
+const String _resultPath = '/tmp/weihan_e2e.json';
+
+Map<String, dynamic> _liveResults() {
+  try {
+    final File file = File(_resultPath);
+    if (!file.existsSync()) {
+      return const <String, dynamic>{};
+    }
+    final Object? decoded = jsonDecode(file.readAsStringSync());
+    return decoded is Map<String, dynamic>
+        ? decoded
+        : const <String, dynamic>{};
+  } on Object {
+    return const <String, dynamic>{};
+  }
+}
 
 Uint8List _scriptAudio() => Uint8List.fromList(
       List<int>.filled(4096, 0),
     );
 
 void main() {
-  final Map<String, String> env = Platform.environment;
-  final String xfAppId = env['XFYUN_APP_ID'] ?? '';
-  final String xfKey = env['XFYUN_API_KEY'] ?? '';
-  final String xfSecret = env['XFYUN_API_SECRET'] ?? '';
-  final String ugVcn = env['XFYUN_UG_VCN'] ?? '';
-  final String zhVcn = env['XFYUN_ZH_VCN'] ?? '';
-  final String niuAppId = env['NIUTRANS_APP_ID'] ?? '';
-  final String niuKey = env['NIUTRANS_API_KEY'] ?? '';
-  final String ugCode = (env['NIUTRANS_UG_CODE'] ?? '').trim();
-  final bool live = env['E2E_LIVE'] == '1';
-  final bool ready = live &&
-      xfAppId.isNotEmpty &&
-      xfKey.isNotEmpty &&
-      xfSecret.isNotEmpty &&
-      niuAppId.isNotEmpty &&
-      niuKey.isNotEmpty;
-
-  // 真实链路的结果回灌给 widget 测试，让 UI 用例也用「真数据」而不是编造的常量。
-  SpeechTurn? zhTurn;
-  SpeechTurn? ugTurn;
-  Uint8List? zhPcm;
-  Uint8List? ugPcm;
-
-  if (ready) {
-    // flutter_test 默认装了拦截网络的 HttpOverrides，这里强制真实连接。
-    HttpOverrides.global = null;
-    speechConfig.appId = xfAppId;
-    speechConfig.apiKey = xfKey;
-    speechConfig.apiSecret = xfSecret;
-    speechConfig.ugVcn = ugVcn;
-    speechConfig.zhVcn = zhVcn.isEmpty ? 'x4_xiaoyan' : zhVcn;
-    translationConfig.provider = TranslationProvider.niuTrans;
-    translationConfig.appId = niuAppId;
-    translationConfig.key = niuKey;
-    translationConfig.ugCode = ugCode.isEmpty ? 'uy' : ugCode;
-  }
-
-  if (ready) {
-    test('E2E 真实链路：中文语音 → 维文译文 → 维语朗读', () async {
-      // 用 TTS 造一段真实语音当「录音」，避免依赖 CI runner 上的物理麦克风。
-      final XfyunSpeechPort source =
-          XfyunSpeechPort(config: speechConfig, ttsMp3: false);
-      zhPcm = await source.speak('你好', Language.chinese);
-      expect(zhPcm!.length, greaterThan(1000),
-          reason: '合成的 PCM 太短，无法充当录音输入');
-
-      // 这里刻意用 App 的默认端口与默认翻译链，覆盖设置页保存后的真实路径。
-      final SpeechPipeline pipeline = SpeechPipeline(
-        speech: const ConfigurableSpeechPort(),
-        translator: buildDefaultTranslator(),
-      );
-      zhTurn = await pipeline.run(zhPcm!, TranslationDirection.zhToUg);
-
-      final SpeechTurn turn = zhTurn!;
-      expect(turn.heard.contains('你好'), isTrue,
-          reason: 'ASR 没识别出合成的中文语音');
-      expect(turn.translation.found, isTrue,
-          reason: '小牛未返回译文：${translationConfig.lastDiagnostic}');
-      expect(turn.translation.isDemo, isFalse,
-          reason: '落到了演示词库，说明云端翻译没生效');
-      expect(turn.translation.text.trim(), isNotEmpty);
-      expect(turn.hasAudio, isTrue, reason: '译文没有生成朗读音频');
-      // CI 靠这一行写 ::notice:: 批注，故显式豁免 avoid_print；不输出任何凭证。
-      // ignore: avoid_print
-      print('E2E live check: 中文识别=${turn.heard} '
-          '译文=${turn.translation.text} provider=${turn.translation.provider} '
-          '录音=${zhPcm!.length}字节 朗读=${turn.audio.length}字节');
-    });
-  } else {
-    test('E2E 真实链路（本轮不跑：E2E_LIVE 未开或凭证不全）', () {
-      expect(ready, isFalse);
-    });
-  }
-
-  if (ready && ugVcn.trim().isNotEmpty) {
-    test('E2E 真实链路：维语语音 → 中文译文 → 中文朗读', () async {
-      final XfyunSpeechPort source =
-          XfyunSpeechPort(config: speechConfig, ttsMp3: false);
-      ugPcm = await source.speak('ياخشىمۇسىز', Language.uyghur);
-      expect(ugPcm!.length, greaterThan(1000));
-
-      final SpeechPipeline pipeline = SpeechPipeline(
-        speech: const ConfigurableSpeechPort(),
-        translator: buildDefaultTranslator(),
-      );
-      ugTurn = await pipeline.run(ugPcm!, TranslationDirection.ugToZh);
-
-      final SpeechTurn turn = ugTurn!;
-      expect(turn.heard.trim(), isNotEmpty);
-      expect(turn.translation.found, isTrue,
-          reason: '小牛未返回中文译文：${translationConfig.lastDiagnostic}');
-      expect(turn.translation.isDemo, isFalse);
-      expect(turn.translation.text.trim(), isNotEmpty);
-      expect(turn.hasAudio, isTrue);
-      // ignore: avoid_print
-      print('E2E live check: 维语识别=${turn.heard} '
-          '译文=${turn.translation.text} provider=${turn.translation.provider} '
-          '录音=${ugPcm!.length}字节 朗读=${turn.audio.length}字节');
-    });
-  }
+  final Map<String, dynamic> live = _liveResults();
+  // 配齐 Secret 跑过真实三环时，UI 用例读到的就是真识别文本 / 真译文。
+  final String zhHeard = (live['zh_heard'] as String?) ?? '你好。';
+  final String zhTranslated =
+      (live['zh_translated'] as String?) ?? 'ياخشىمۇسىز';
+  final String ugHeard = (live['ug_heard'] as String?) ?? 'ياخشىمۇسىز';
+  final String ugTranslated = (live['ug_translated'] as String?) ?? '你好';
+  final Uint8List scriptAudio = _scriptAudio();
 
   testWidgets('E2E UI：点击说话 → 识别/译文气泡 → 自动朗读 → 手动朗读',
       (WidgetTester tester) async {
-    final SpeechTurn? turn = zhTurn;
-    final String heard = turn?.heard ?? '你好。';
-    final String translated = turn?.translation.text ?? 'ياخشىمۇسىز';
-    final Uint8List audio = turn?.audio ?? _scriptAudio();
-    final _FakeAudioPort mic = _FakeAudioPort(zhPcm ?? _scriptAudio());
+    final _FakeAudioPort mic = _FakeAudioPort(scriptAudio);
 
     await tester.pumpWidget(MaterialApp(
       home: ConversationPage(
-        speech: _ReplaySpeechPort(heard: heard, audio: audio),
-        translator: _ReplayTranslator(translated),
+        speech: _ReplaySpeechPort(heard: zhHeard, audio: scriptAudio),
+        translator: _ReplayTranslator(zhTranslated),
         audio: mic,
       ),
     ));
@@ -164,8 +75,8 @@ void main() {
     await tester.tap(voice);
     await tester.pumpAndSettle();
     expect(mic.stops, 1);
-    expect(find.text(heard), findsOneWidget, reason: '识别原文气泡缺失');
-    expect(find.text(translated), findsOneWidget, reason: '译文气泡缺失');
+    expect(find.text(zhHeard), findsOneWidget, reason: '识别原文气泡缺失');
+    expect(find.text(zhTranslated), findsOneWidget, reason: '译文气泡缺失');
     expect(find.textContaining('识别到'), findsOneWidget);
     expect(mic.played.length, 1, reason: '译文应自动朗读一次');
     expect(mic.played.single.length, greaterThan(1000));
@@ -178,16 +89,12 @@ void main() {
 
   testWidgets('E2E UI：切到维语→中文后仍走完整三环',
       (WidgetTester tester) async {
-    final SpeechTurn? turn = ugTurn;
-    final String heard = turn?.heard ?? 'ياخشىمۇسىز';
-    final String translated = turn?.translation.text ?? '你好';
-    final Uint8List audio = turn?.audio ?? _scriptAudio();
-    final _FakeAudioPort mic = _FakeAudioPort(ugPcm ?? _scriptAudio());
+    final _FakeAudioPort mic = _FakeAudioPort(scriptAudio);
 
     await tester.pumpWidget(MaterialApp(
       home: ConversationPage(
-        speech: _ReplaySpeechPort(heard: heard, audio: audio),
-        translator: _ReplayTranslator(translated),
+        speech: _ReplaySpeechPort(heard: ugHeard, audio: scriptAudio),
+        translator: _ReplayTranslator(ugTranslated),
         audio: mic,
       ),
     ));
@@ -204,8 +111,8 @@ void main() {
     await tester.tap(voice);
     await tester.pumpAndSettle();
 
-    expect(find.text(heard), findsOneWidget);
-    expect(find.text(translated), findsOneWidget);
+    expect(find.text(ugHeard), findsOneWidget);
+    expect(find.text(ugTranslated), findsOneWidget);
     expect(mic.played.length, 1);
   });
 }

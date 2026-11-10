@@ -212,13 +212,28 @@ jobs:
           E2E_LIVE: '1'
         run: |
           set -o pipefail
-          if flutter test --timeout 180s --reporter expanded test/speech_e2e_test.dart 2>&1 | tee /tmp/e2e_live.log; then
-            grep 'E2E live check:' /tmp/e2e_live.log | while IFS= read -r line; do
+          rm -f /tmp/weihan_e2e.json
+          # 第一层：纯 test() 文件跑真实三环，把真实识别文本 / 译文写进结果文件。
+          # 绝不能和 testWidgets 放同一文件 —— fake async 会让 WebSocket 卡到超时。
+          if flutter test --timeout 180s --reporter expanded \
+              test/live_speech_pipeline_test.dart 2>&1 | tee /tmp/e2e_network.log; then
+            grep 'E2E live check:' /tmp/e2e_network.log | while IFS= read -r line; do
               echo "::notice::${line}"
             done
           else
-            echo "::error::语音端到端实测失败，完整输出如下："
-            tail -n 80 /tmp/e2e_live.log | while IFS= read -r line; do
+            echo "::error::语音三环真实链路失败，完整输出如下："
+            tail -n 80 /tmp/e2e_network.log | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            exit 1
+          fi
+          # 第二层：widget 测试读真实结果回放 UI（无结果文件时自动用脚本数据）。
+          if flutter test --timeout 90s --reporter expanded \
+              test/speech_e2e_test.dart 2>&1 | tee /tmp/e2e_ui.log; then
+            echo "::notice::E2E UI 回归通过：录音启停 / 双气泡 / 自动朗读 / 朗读按钮"
+          else
+            echo "::error::语音 UI 端到端回归失败，完整输出如下："
+            tail -n 80 /tmp/e2e_ui.log | while IFS= read -r line; do
               echo "::error::${line}"
             done
             exit 1

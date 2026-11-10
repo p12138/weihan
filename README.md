@@ -105,12 +105,15 @@ push 之后自动跑：
   都只在对应 Secret 非空时运行。`Unit tests` 会**排除** `test/live_*.dart`：
   真实云端偶发慢响应会撞上 `flutter test` 默认 30 秒超时（run #37 就因此误判红），
   且重复跑会白耗免费额度；这些链路只由专门步骤跑，各自放宽到 90 / 120 / 180 秒。
-- **语音全链路零人工回归**由 `test/speech_e2e_test.dart` 承担，分两层：
-  ① 配齐 Secret 且 `E2E_LIVE=1` 时，用真实凭证让讯飞 TTS 合成 16k PCM 冒充麦克风录音，
-  再跑 App 真实端口的 ASR → 小牛 MT → TTS（中→维、维→中两个方向）；
-  ② 把上一层的**真实结果**回灌给 widget 测试，断言「点开始 → 点结束 → 出现识别气泡 + 译文气泡
-  → 自动朗读 → 点朗读按钮再播一次」。第二层不发网络、不需要凭证，因此每次 push 都跑，
-  改坏 UI 编排会立刻变红，不用人手点一遍。
+- **语音全链路零人工回归**拆成两个文件、两层验证：
+  ① `test/live_speech_pipeline_test.dart`：配齐 Secret 且 `E2E_LIVE=1` 时，用真实凭证让讯飞 TTS
+  合成 16k PCM 冒充麦克风录音，再跑 App 真实端口的 ASR → 小牛 MT → TTS（中→维、维→中双向），
+  把真实识别文本 / 译文写进 `/tmp/weihan_e2e.json`；
+  ② `test/speech_e2e_test.dart`：读该结果文件回放给 widget 测试，断言「点开始 → 点结束 →
+  出现识别气泡 + 译文气泡 → 自动朗读 → 点朗读按钮再播一次」。第二层不发网络、不需要凭证，
+  每次 push 都跑，改坏 UI 编排会立刻变红。
+  **两层必须分文件**：同文件混用 `test()` 与 `testWidgets()` 会让整个文件被套上
+  `TestWidgetsFlutterBinding` 的 fake async，真实 WebSocket 永远等不到完成（run #38 各卡满 3 分钟）。
 - **唯一仍需你本人的是 iOS 真机分发**：非越狱 iPhone 只能装 Apple 签名过的 IPA，签名需要你的 Apple 账号 / 证书 / 设备 UDID，CI 代劳不了。日常自用建议以 Android APK 为主。
 - macOS runner 按 10 倍计费，设备冒烟只在代码 / 配置变更时跑（`paths` 过滤），纯文档改动不跑；也可在 Actions 页手动 `Run workflow` 触发。
 
@@ -356,11 +359,12 @@ Python/curl 校验不能替代 Dart 实现）。维语发音人未开通只输�
 `11200` 授权风险已排除；同轮小牛 Python / Dart 实测也照常通过。
 唯一告警是 GitHub Actions 的 Node.js 20 / setup-java v4 弃用提示，与代码无关、不判红。
 
-**从「验协议」升级到「验整条用法」**：`Speech E2E live check` 用同一组 Secret 跑
-`test/speech_e2e_test.dart`。CI 上没有麦克风，就让讯飞 TTS 先合成一段 16k PCM
-当作「录到的音」，再交给 App 真实的 `ConfigurableSpeechPort` + 小牛翻译链，
-跑完 ASR → MT → TTS 后把真实识别文本、真实译文、真实音频回灌给 widget 测试，
-自动点两下语音按钮、自动点朗读按钮并断言两条气泡与两次播放。
+**从「验协议」升级到「验整条用法」**：`Speech E2E live check` 用同一组 Secret 依次跑
+`test/live_speech_pipeline_test.dart` 与 `test/speech_e2e_test.dart`。CI 上没有麦克风，
+就让讯飞 TTS 先合成一段 16k PCM 当作「录到的音」，再交给 App 真实的
+`ConfigurableSpeechPort` + 小牛翻译链跑完 ASR → MT → TTS，把真实识别文本与译文
+写进结果文件；第二条命令由 widget 测试读回这些真数据，自动点两下语音按钮、
+自动点朗读按钮并断言两条气泡与两次播放。
 因此「录音字节格式对不对、三环数据有没有正确流到 UI、朗读按钮是不是真能用」
 都由 CI 回答，不需要人手装包点按。UI 那一层不依赖凭证，每次 push 都会跑。
 边界说清楚：CI runner 无物理麦克风，`record` / `audioplayers` 的平台实现本身
