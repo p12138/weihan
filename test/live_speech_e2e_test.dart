@@ -158,7 +158,8 @@ void main() {
     await tester.tap(voice);
     await tester.pumpAndSettle();
     expect(mic.starts, 1);
-    expect(find.textContaining('正在录音'), findsOneWidget);
+    // 「正在录音」同时出现在 notice 和按钮 label 里，用按钮的精确文案断言状态切换。
+    expect(find.text('正在录音 · 点击结束'), findsOneWidget);
 
     await tester.tap(voice);
     await tester.pumpAndSettle();
