@@ -481,7 +481,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     super.initState();
     _provider = translationConfig.provider;
     // 自带凭证的包里绝不能把内置密钥明文回填到输入框（手机屏幕会直接显示）。
-    final bool bundled = kHasBundledCredentials;
+    const bool bundled = kHasBundledCredentials;
     _appIdController =
         TextEditingController(text: bundled ? '' : translationConfig.appId);
     _keyController =
@@ -519,7 +519,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
   void _save() {
     // 内置凭证模式下密钥输入框初始为空，留空代表「沿用内置值」；
     // 只有用户主动输入才覆盖。否则一进设置页点保存就会把内置凭证清空。
-    final bool bundled = kHasBundledCredentials;
+    const bool bundled = kHasBundledCredentials;
     translationConfig.provider = _provider;
     if (!bundled || _appIdController.text.trim().isNotEmpty) {
       translationConfig.appId = _appIdController.text.trim();
