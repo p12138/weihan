@@ -143,6 +143,7 @@ class _ConversationPageState extends State<ConversationPage> {
     }
     _holding = true;
     if (!widget.speech.isAvailable) {
+      _holding = false;
       setState(() => _notice = '语音未接入 · 到设置页填讯飞 APPID / APIKey / APISecret');
       return;
     }
@@ -153,7 +154,11 @@ class _ConversationPageState extends State<ConversationPage> {
         return;
       }
       if (!granted) {
-        setState(() => _notice = '需要麦克风权限才能在系统设置里开启录音');
+        // 失败分支必须复位 _holding：否则下一次按住会带着「手指还按着」的
+        // 残留状态，启动完录音后被误判成该丢弃。
+        _holding = false;
+        setState(() => _notice =
+            '需要麦克风权限 · 在系统弹窗点「允许」，或到系统设置里开启后重试');
         return;
       }
       await _audio().startRecord();
@@ -171,6 +176,7 @@ class _ConversationPageState extends State<ConversationPage> {
       });
       _startLevels();
     } on Object catch (error) {
+      _holding = false;
       if (!mounted) {
         return;
       }
@@ -237,15 +243,19 @@ class _ConversationPageState extends State<ConversationPage> {
       _notice = '正在识别与翻译…';
     });
     final TranslationDirection direction = _state.direction;
+    String recordingInfo = '';
     try {
       final Uint8List pcm = await _audio().stopRecord();
+      recordingInfo = _audio().recordingDiagnostics;
       if (pcm.isEmpty) {
         if (!mounted) {
           return;
         }
         setState(() {
           _busy = false;
-          _notice = '没录到声音 · 请按住按钮说完再松手';
+          _notice = recordingInfo.isEmpty
+              ? '没录到声音 · 请按住按钮说完再松手'
+              : '没录到声音 · $recordingInfo · 请按住按钮说完再松手';
         });
         return;
       }
@@ -288,10 +298,13 @@ class _ConversationPageState extends State<ConversationPage> {
         return;
       }
       final String diagnostic = speechConfig.lastDiagnostic.trim();
+      // 把录音统计贴进失败提示：一眼分清「压根没录到」「录到了但云端没认出」
+      // 和「音频发出去了但服务报错」，不用再靠猜。
+      final String extra = recordingInfo.isEmpty ? '' : ' · $recordingInfo';
       setState(() {
         _busy = false;
         _notice =
-            '语音失败 · ${diagnostic.isEmpty ? _brief(error.toString()) : _brief(diagnostic)}';
+            '语音失败 · ${diagnostic.isEmpty ? _brief(error.toString()) : _brief(diagnostic)}$extra';
       });
     }
   }

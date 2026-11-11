@@ -164,6 +164,33 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('松手结束'), findsNothing, reason: '松手后浮层要收起来');
   });
+
+  // 真机上最难判断的是「到底有没有录到」，把统计摊在提示里就不用靠猜。
+  testWidgets('E2E UI：录到 0 字节时提示里带录音诊断', (WidgetTester tester) async {
+    final _FakeAudioPort mic = _FakeAudioPort(
+      Uint8List(0),
+      diagnostics: '录音 0 字节（麦克风没有送来数据）',
+    );
+
+    await tester.pumpWidget(MaterialApp(
+      home: ConversationPage(
+        speech: _ReplaySpeechPort(heard: zhHeard, audio: scriptAudio),
+        translator: _ReplayTranslator(zhTranslated),
+        audio: mic,
+      ),
+    ));
+
+    final Finder voice = find.byKey(const ValueKey<String>('voice-button'));
+    final TestGesture hold = await tester.startGesture(tester.getCenter(voice));
+    await tester.pump();
+    await tester.pump();
+    await hold.up();
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('没录到声音'), findsOneWidget);
+    expect(find.textContaining('录音 0 字节'), findsOneWidget);
+    expect(mic.stops, 1);
+  });
 }
 
 /// 假录音 / 播放端口：只记录调用，不触碰 record / audioplayers 平台通道。
@@ -171,12 +198,16 @@ void main() {
 /// 用 extends 而不是 implements：`levels` / `dispose` 在 AudioPort 里有默认实现，
 /// implements 只会继承签名、拿不到实现，得把两个成员都重写一遍。
 class _FakeAudioPort extends AudioPort {
-  _FakeAudioPort(this.recorded);
+  _FakeAudioPort(this.recorded, {this.diagnostics = ''});
 
   final Uint8List recorded;
+  final String diagnostics;
   final List<Uint8List> played = <Uint8List>[];
   int starts = 0;
   int stops = 0;
+
+  @override
+  String get recordingDiagnostics => diagnostics;
 
   @override
   Future<bool> hasPermission() async => true;

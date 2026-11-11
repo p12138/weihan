@@ -429,7 +429,7 @@ class XfyunSpeechPort implements SpeechPort {
     SpeechConfig? config,
     XfyunSocketOpener? opener,
     XfyunDateBuilder? dateBuilder,
-    this.frameDelay = const Duration(milliseconds: 10),
+    this.frameDelay = const Duration(milliseconds: 40),
     this.ttsMp3 = true,
   })  : config = config ?? speechConfig,
         opener = opener ?? openXfyunSocket,
@@ -440,7 +440,9 @@ class XfyunSpeechPort implements SpeechPort {
   final XfyunSocketOpener opener;
   final XfyunDateBuilder dateBuilder;
 
-  /// 分包发送间隔。官方建议 40ms；短句用 10ms 换取更快返回。
+  /// 分包发送间隔。一帧 1280 字节正好是 16k/16bit 单声道的 40ms，官方要求
+  /// 按这个实时率上传。之前用 10ms（4 倍速灌）在 CI 的干净合成音频上能过，
+  /// 真机录音更长、带环境噪声时服务端容易只吃到前半段，返回空识别结果。
   final Duration frameDelay;
 
   /// 合成结果格式。CI live check 用 false 拿到 16k PCM，直接喂回 ASR 做闭环。
@@ -540,12 +542,24 @@ class XfyunSpeechPort implements SpeechPort {
         seq: frames.length + 1,
       ));
 
-      final String text = await done.future.timeout(
-        const Duration(seconds: 25),
-        onTimeout: () => throw const SpeechException('识别超时（25 秒）'),
-      );
+      // 发帧本身就是实时率，超时预算要把上传时间算进去，否则长按一句话
+      // 还没发完就被掐断，界面只会显示「识别超时」，看不出是长度问题。
+      final int sendMs = frames.length * frameDelay.inMilliseconds;
+      final String text = (await done.future.timeout(
+        Duration(milliseconds: 25000 + sendMs),
+        onTimeout: () => throw const SpeechException('识别超时（网络或服务端无响应）'),
+      ))
+          .trim();
+      if (text.isEmpty) {
+        // 音频确实发出去了，但云端一个字都没回。给出上传时长，配合界面上的
+        // 「录音 x.x s / 峰值 xx%」就能直接分清是麦克风没声还是识别参数不对。
+        final double seconds = audio.lengthInBytes / 32000;
+        throw SpeechException(
+            '云端没识别出文字（已上传 ${seconds.toStringAsFixed(1)}s 音频）'
+            ' · 靠近话筒说完整一句，并确认顶部源语言与你说的话一致');
+      }
       config.lastDiagnostic = '';
-      return text.trim();
+      return text;
     } on Object catch (error) {
       config.lastDiagnostic = _diagnose(error);
       rethrow;

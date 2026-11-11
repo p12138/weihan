@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'conversation_page.dart';
+import 'device_audio.dart';
 import 'palette_controller.dart';
 import 'theme.dart';
 
@@ -9,6 +12,11 @@ void main() {
   // 读上次选的主题；读不到就用默认的艾德莱斯配色。
   PaletteController.instance.load();
   runApp(const BaseApp());
+  // 首帧之后再弹麦克风授权框：既不盖在原生启动页上，也不会在用户
+  // 第一次按住说话时弹出来把那次录音抢废。
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(primeMicrophonePermission());
+  });
 }
 
 /// 应用外壳。保留 BaseApp 名称，便于既有测试与文档引用。

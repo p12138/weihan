@@ -3,7 +3,7 @@ description: >-
   融合 App（维汉双向语音翻译）· 个人自用双端工程。小牛翻译负责文字互译，
   讯飞 WebAPI 负责中维双向语音识别与朗读，密钥只在运行时填写。
 publish_to: 'none'
-version: 0.4.1+1
+version: 0.4.2+1
 
 environment:
   # Flutter 3.24.0 自带 Dart 3.5.x；下限对齐 CI 固定版本

@@ -285,6 +285,29 @@ void main() {
     expect(config.lastDiagnostic, isEmpty);
   });
 
+  test('识别返回空文字时给出带音频时长的可诊断异常', () async {
+    final _FakeSocket socket = _FakeSocket(<String>[_asrFrame('', 2)]);
+    final XfyunSpeechPort port = XfyunSpeechPort(
+      config: _config(),
+      opener: _openerFor(socket, <Uri>[]),
+      dateBuilder: () => 'Tue, 14 May 2024 08:43:39 GMT',
+      frameDelay: Duration.zero,
+    );
+    Object? caught;
+    try {
+      // 32000 字节 = 1 秒 16k/16bit 单声道 PCM。
+      await port.listen(Uint8List(32000), Language.chinese);
+    } on Object catch (error) {
+      caught = error;
+    }
+    expect(caught, isA<SpeechException>());
+    final String message = (caught! as SpeechException).message;
+    expect(message, contains('云端没识别出文字'));
+    expect(message, contains('1.0s'));
+    expect(message, contains('源语言'));
+    expect(socket.closed, isTrue);
+  });
+
   test('speak 端到端：维语发音人、多帧音频合并', () async {
     final _FakeSocket socket = _FakeSocket(<String>[
       _ttsFrame(<int>[1, 2], 1),
