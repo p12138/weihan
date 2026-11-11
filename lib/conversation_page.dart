@@ -276,7 +276,7 @@ class _ConversationPageState extends State<ConversationPage> {
   /// 顶栏的调色板按钮：按顺序切到下一套配色。
   /// 只改全局色板并通知，MaterialApp 会整棵树重建。
   void _cyclePalette() {
-    final List<BrandPalette> all = BrandPalette.all;
+    const List<BrandPalette> all = BrandPalette.all;
     final int index =
         all.indexWhere((BrandPalette item) => item.id == AppColors.palette.id);
     final BrandPalette next = all[(index + 1) % all.length];
@@ -682,11 +682,7 @@ class _EmptyState extends StatelessWidget {
                   width: 92,
                   height: 92,
                   decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: <Color>[Color(0xFF1B7168), AppColors.primaryDeep],
-                    ),
+                    gradient: AppColors.gradient,
                     borderRadius: BorderRadius.circular(28),
                     boxShadow: const <BoxShadow>[
                       BoxShadow(
@@ -1158,13 +1154,7 @@ class _SendButton extends StatelessWidget {
       width: 48,
       height: 48,
       decoration: BoxDecoration(
-        gradient: enabled
-            ? LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: <Color>[Color(0xFF1B7168), AppColors.primaryDeep],
-              )
-            : null,
+        gradient: enabled ? AppColors.gradient : null,
         color: enabled ? null : AppColors.line,
         shape: BoxShape.circle,
         boxShadow: enabled
@@ -1209,13 +1199,7 @@ class MessageBubble extends StatelessWidget {
       constraints: BoxConstraints(maxWidth: maxWidth),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
-        gradient: mine
-            ? LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: <Color>[Color(0xFF1D7169), AppColors.primaryDeep],
-              )
-            : null,
+        gradient: mine ? AppColors.gradient : null,
         color: mine ? null : AppColors.card,
         borderRadius: BorderRadius.only(
           topLeft: const Radius.circular(18),

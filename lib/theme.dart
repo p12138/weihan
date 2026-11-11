@@ -198,57 +198,57 @@ class BrandPalette {
 class AppColors {
   AppColors._();
 
-  static BrandPalette _current = BrandPalette.adeles;
+  /// 当前配色。切主题时先改这个字段，再 notifyListeners 让界面重建。
+  static BrandPalette palette = BrandPalette.adeles;
 
-  static BrandPalette get palette => _current;
+  static Color get primary => palette.primary;
 
-  static set palette(BrandPalette value) => _current = value;
+  static Color get primaryLight => palette.primaryLight;
 
-  static Color get primary => _current.primary;
+  static Color get primaryDeep => palette.primaryDeep;
 
-  static Color get primaryLight => _current.primaryLight;
+  static Color get primarySoft => palette.primarySoft;
 
-  static Color get primaryDeep => _current.primaryDeep;
-
-  static Color get primarySoft => _current.primarySoft;
-
-  static Color get accent => _current.accent;
+  static Color get accent => palette.accent;
 
   /// 强调色的旧名字，历史代码里写作 sand（沙金）。
-  static Color get sand => _current.accent;
+  static Color get sand => palette.accent;
 
-  static Color get accentSoft => _current.accentSoft;
+  static Color get accentSoft => palette.accentSoft;
 
-  static Color get sandSoft => _current.accentSoft;
+  static Color get sandSoft => palette.accentSoft;
 
-  static Color get accentInk => _current.accentInk;
+  static Color get accentInk => palette.accentInk;
 
-  static Color get coral => _current.coral;
+  static Color get coral => palette.coral;
 
-  static Color get canvas => _current.canvas;
+  static Color get canvas => palette.canvas;
 
   static Color get card => Colors.white;
 
-  static Color get ink => _current.ink;
+  static Color get ink => palette.ink;
 
-  static Color get inkMuted => _current.inkMuted;
+  static Color get inkMuted => palette.inkMuted;
 
-  static Color get line => _current.line;
+  static Color get line => palette.line;
+
+  /// 主渐变：主色浅阶 → 主色深阶。顶栏、自己的气泡、主按钮、语音条共用。
+  static LinearGradient get gradient => palette.gradient;
 
   /// 顶栏渐变。
-  static LinearGradient get headerGradient => _current.gradient;
+  static LinearGradient get headerGradient => palette.gradient;
 
   /// 自己的气泡 / 主按钮渐变。
-  static LinearGradient get bubbleGradient => _current.gradient;
+  static LinearGradient get bubbleGradient => palette.gradient;
 
   /// 语言色：中文侧主色、维文侧强调色。
-  static Color language(bool uyghur) => _current.colorOf(uyghur);
+  static Color language(bool uyghur) => palette.colorOf(uyghur);
 
   /// 语言浅底。
-  static Color languageSoft(bool uyghur) => _current.softOf(uyghur);
+  static Color languageSoft(bool uyghur) => palette.softOf(uyghur);
 
   /// 语言渐变。
-  static LinearGradient gradientOf(bool uyghur) => _current.gradientOf(uyghur);
+  static LinearGradient gradientOf(bool uyghur) => palette.gradientOf(uyghur);
 }
 
 /// 全局主题。只做浅色主题：这是一个自用工具，深色模式只会增加
