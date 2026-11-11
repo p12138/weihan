@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""维汉互译 App · 工程静态自检（无需 Flutter SDK）
+"""融合 App · 工程静态自检（无需 Flutter SDK）
 
 补上原工程缺失的 scripts/verify_project.py，使 selfuse-android.yml /
 selfuse-ios.yml 里的 `python3 scripts/verify_project.py --scope all` 能直接跑。

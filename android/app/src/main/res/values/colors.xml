@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 品牌色：与 Flutter 侧 AppColors 保持一致 -->
+    <color name="brand_primary">#17635C</color>
+    <color name="brand_deep">#0B3A36</color>
+    <color name="brand_sand">#C89544</color>
+    <color name="ic_launcher_background">#0B3A36</color>
+</resources>

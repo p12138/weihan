@@ -1,4 +1,4 @@
-# 维汉互译 App · 自用双端工程
+# 融合 · 维汉双向语音翻译（自用双端工程）
 
 > **定位**：个人与朋友自用、不上架、零密钥起跑。
 > 早期那份 65 文件 / 44 个 Dart / 约 6179 行 / 85 个测试的源码包
@@ -64,6 +64,10 @@
 | `lib/device_audio.dart` | 录音（16k/16bit/单声道 PCM 流）与播放（mp3）平台端口 |
 | `lib/speech_pipeline.dart` | 三环编排：ASR → MT → TTS |
 | `lib/conversation_page.dart` | 对话 UI（维文 RTL、方向切换、语音按钮、译文朗读、云端设置） |
+| `lib/theme.dart` | 品牌色板与全局主题（艾德莱斯绸松石绿 + 沙金、组件默认样式、维文行距） |
+| `lib/brand_mark.dart` | 应用内品牌标识，与桌面图标同一套几何比例 |
+| `scripts/make_icons.py` | 生成双端图标与启动图（numpy SDF 光栅化 + zlib 写 PNG，无第三方依赖） |
+| `test/ui_brand_test.dart` | 视觉改版回归：标语、品牌标识、全页唯一语音按钮 |
 | `lib/bundled_config.dart` | 编译期「凭证已内置」标记（不含任何值），驱动设置页不回显密钥 |
 | `scripts/write_bundle_defines.py` | 从 CI 环境变量生成 `--dart-define-from-file` JSON，只打印键名 |
 | `.github/workflows/selfuse-bundled.yml` | 自带凭证自用包出包工作流（Android 自动 / iOS 手动可选） |
@@ -418,6 +422,29 @@ E2E UI 回归通过：录音启停 / 双气泡 / 自动朗读 / 朗读按钮
 
 ---
 
+## 7.5 界面与品牌
+
+应用名 **融合**，标语「让您和您的民族朋友沟通不再有障碍」。
+
+- **配色**：主色松石绿 `#17635C`（艾德莱斯绸的织物色），强调色沙金 `#C89544`，
+  底色暖白 `#FBF8F3`。深色模式刻意不做 —— 自用工具多一套配色就是多一份维护成本。
+- **图标**：两枚叠放的对话气泡（白色=中文侧，沙金=维文侧），48px 下仍可辨认。
+  图标不是手绘 PNG，而是 `scripts/make_icons.py` 用 SDF 逐像素渲染出来的：
+  Android 自适应图标（前景/背景两层 + `mipmap-anydpi-v26`）、legacy 图标、
+  iOS 全尺寸 `AppIcon`（无 alpha，系统自己切圆角）、双端启动图，一次生成。
+  改配色只改脚本顶部的调色板，然后 `python scripts/make_icons.py` 重跑。
+- **启动页**：Android 用品牌色 `windowBackground` + 居中 logo，Android 12+ 另配
+  `windowSplashScreenBackground`/`AnimatedIcon`；iOS 改 `LaunchScreen.storyboard`
+  底色并替换 `LaunchImage`。**没有 Flutter 层的假启动页** —— 那种要卡一个定时器，
+  只会让冷启动更慢，还会把 widget 测试全打乱。
+- **主界面**：渐变顶栏（品牌标识 + 名称 + 标语）、状态条（方向 / 翻译通道 / 语音通道）、
+  空状态（92px 标识 + 标语 + 三条操作提示）、双语气泡（自己的在右用渐变深底，
+  对方在左用白卡描边）、底部输入区（圆角输入框 + 圆形发送键 + 全宽语音按钮）。
+- **可读性细节**：维吾尔文用 19px / 1.95 行距（阿拉伯字母连写需要更松的行距）；
+  系统字号放大最多按 1.3 倍收口，避免气泡与输入区挤成一团。
+- **无动画依赖**：全页没有无限循环动画（脉冲、loading 圈），`pumpAndSettle`
+  才不会被挂死 —— 这是 E2E 能稳定跑的前提，改 UI 时不要引入 `repeat()`。
+
 ## 8. 自带凭证自用包（完全免手填，仅自用）
 
 这一节对应「连设置页那一次填写也省掉」的选择。**它改变了原先「密钥不进包」的约定**，
@@ -460,8 +487,10 @@ CI 会先跑 `test/bundled_config_test.dart`（带同一份 define 文件）确�
   固定直链：`https://github.com/p12138/weihan/releases/download/selfuse-latest/weihan-selfuse-debug.apk`
 - **为什么 Artifacts 是 zip**：GitHub Actions 的 Artifacts 由平台强制打包成 zip，
   无法改成裸文件；想下原始 `.apk` 只能走 Releases（本工作流已自动发布）。
-- 滚动 tag `selfuse-latest` 每次构建都被覆盖，Releases 页永远只挂最新包；
-  Artifacts 里同名的 `weihan-selfuse-bundled-apk-<run号>`（zip）保留 **3 天**作为备份。
+- 每次构建会发两个 Release：滚动 tag `selfuse-latest`（覆盖，直链固定）与
+  版本 tag `v<版本>-build<run号>`（留历史，出问题可回退到某一版）。
+  Release 说明里写了版本、commit、APK 的 SHA-256 与体积。
+- Artifacts 里同名的 `weihan-selfuse-bundled-apk-<run号>`（zip）保留 **3 天**作为备份。
 - **仓库已是 private**（2026-11-11）：早期 public 时工作流只构建、不上传；
   现在 guard 判定 `REPO_PRIVATE=true` 会自动上传并发布。
   若哪天又转回 public，仍可用 Variable `BUNDLE_ALLOW_PUBLIC=1` 显式放开（风险自负）。

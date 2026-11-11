@@ -213,28 +213,48 @@ jobs:
           retention-days: 3
 
       # Actions 的 Artifacts 一定是 zip（平台强制），想直接下 .apk 只能走 Releases。
-      # 用一个滚动 tag（selfuse-latest）+ 固定文件名覆盖，保证 Releases 页永远只有最新包，
-      # 同时给出稳定直链，装包时点一下就下载，不用解压：
-      #   https://github.com/<owner>/<repo>/releases/download/selfuse-latest/weihan-selfuse-debug.apk
-      - name: 发布到 Releases（免解压直链）
+      # 每次构建发两个 Release：
+      #   * 滚动 tag selfuse-latest —— 永远指向最新包，直链固定不变：
+      #     https://github.com/<owner>/<repo>/releases/download/selfuse-latest/weihan-selfuse-debug.apk
+      #   * 版本 tag v<版本>-build<run>  —— 留历史，方便回退到某一版
+      - name: 发布到 Releases（免解压直链 + 历史版本）
         if: ${{ needs.guard.outputs.upload == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: selfuse-latest
+          ROLLING_TAG: selfuse-latest
         run: |
           set -euo pipefail
+          version="$(python3 -c "import re,sys; m=re.search(r'^version:\s*([0-9.]+)', open('pubspec.yaml',encoding='utf-8').read(), re.M); print(m.group(1) if m else '0.0.0')")"
+          tag="v${version}-build${GITHUB_RUN_NUMBER}"
+          commit="${GITHUB_SHA:0:7}"
           apk="$(ls build/app/outputs/flutter-apk/*.apk | head -n1)"
           cp "$apk" weihan-selfuse-debug.apk
-          note="自带凭证的自用语音翻译包：装到手机即可使用，设置页无需填写任何内容。
-          来自 commit ${GITHUB_SHA:0:7}，run #${GITHUB_RUN_NUMBER}。
-          ⚠️ 凭证可被反编译提取，请勿分发本包。"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "自用语音翻译包（最新）" --notes "$note"
+          sha="$(sha256sum weihan-selfuse-debug.apk | cut -d' ' -f1)"
+          size="$(du -h weihan-selfuse-debug.apk | cut -f1)"
+
+          note="自带凭证的自用语音翻译包，装到手机即可使用，设置页无需填写任何内容。
+          版本 ${version} · 构建 #${GITHUB_RUN_NUMBER} · commit ${commit}
+          APK SHA-256：${sha}
+          体积：${size}
+          ⚠️ 凭证可被打包体反编译提取，请勿分发本包。"
+
+          # 滚动 tag：覆盖同一个文件，直链永远是最新版
+          if gh release view "$ROLLING_TAG" >/dev/null 2>&1; then
+            gh release edit "$ROLLING_TAG" --title "自用语音翻译包（最新）" --notes "$note"
           else
-            gh release create "$TAG" --title "自用语音翻译包（最新）" --notes "$note"
+            gh release create "$ROLLING_TAG" --title "自用语音翻译包（最新）" --notes "$note"
           fi
-          gh release upload "$TAG" weihan-selfuse-debug.apk --clobber
-          echo "::notice::APK 已发布到 Releases，直链 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${TAG}/weihan-selfuse-debug.apk"
+          gh release upload "$ROLLING_TAG" weihan-selfuse-debug.apk --clobber
+
+          # 版本 tag：留历史，出问题可回到某一版
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::notice::${tag} 已存在，跳过历史版本创建"
+          else
+            gh release create "$tag" --title "维汉互译 ${version}（构建 ${GITHUB_RUN_NUMBER}）" \
+              --notes "$note" weihan-selfuse-debug.apk
+          fi
+
+          echo "::notice::已发布：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${ROLLING_TAG}/weihan-selfuse-debug.apk （sha256 ${sha}）"
 
       - name: 公开仓库未上传产物
         if: ${{ needs.guard.outputs.upload != 'true' }}
