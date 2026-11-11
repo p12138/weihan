@@ -112,8 +112,12 @@ jobs:
             [ -z "$tag" ] && continue
             if gh release edit "$tag" --draft >/dev/null 2>&1; then
               echo "::notice::已把 ${tag} 撤回为草稿（公开仓库不再匿名可下载）"
+            elif gh release delete-asset "$tag" weihan-selfuse-debug.apk --yes >/dev/null 2>&1; then
+              # GitHub API 不允许把已发布的 Release 改回草稿（#7 实测被拒），
+              # 退一步删掉其中的 APK 附件：页面还在，但已经没有可下载的凭证包。
+              echo "::notice::${tag} 无法转回草稿，已删除其中的 APK 附件；公开页面不再有可下载文件"
             else
-              echo "::warning::撤回 ${tag} 失败，请到 Releases 页手动改为 Draft"
+              echo "::warning::${tag} 撤回失败，请到 Releases 页手动删除里面的 weihan-selfuse-debug.apk"
             fi
           done < /tmp/published_tags.txt
 
@@ -266,15 +270,10 @@ jobs:
           sha="$(sha256sum weihan-selfuse-debug.apk | cut -d' ' -f1)"
           size="$(du -h weihan-selfuse-debug.apk | cut -f1)"
 
-          # 草稿模式：只有仓库写权限者登录后可见可下载；解除时显式取消草稿状态，
-          # 避免仓库转回 private 后包还留在草稿里找不到。
+          # 草稿模式：只有仓库写权限者登录后可见可下载。
           if [ "${DRAFT}" = "true" ]; then
-            edit_draft="--draft"
-            create_draft="--draft"
             visibility_note="（草稿包：仓库为 public，请登录你的 GitHub 账号后下载）"
           else
-            edit_draft="--draft=false"
-            create_draft=""
             visibility_note=""
           fi
 
@@ -284,16 +283,36 @@ jobs:
           体积：${size}${visibility_note}
           ⚠️ 凭证可被打包体反编译提取，请勿分发本包。"
 
-          # 草稿 Release 在 releases/tags 接口上查不到，必须用 list 判断是否已存在。
+          # 草稿 Release 在 releases/tags 接口上查不到，只能用列表判断是否已存在。
           has_release() {
-            gh release list --limit 200 --json tagName --jq '.[].tagName' | grep -qx "$1"
+            gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              | python3 -c "import json,sys; print('\n'.join(r['tag_name'] for r in json.load(sys.stdin)))" \
+              | grep -qx "$1"
           }
 
-          # 滚动 tag：覆盖同一个文件，直链永远是最新版
+          if [ "${DRAFT}" = "true" ]; then
+            # 已发布的 Release 无法用 PATCH draft=true 改回草稿（#7 实测被拒），
+            # 所以草稿模式下先删掉同名 Release 再以草稿重建：
+            # 任何时刻公开页面上都不会出现含凭证的包。tag 本身保留（不加 --cleanup-tag）。
+            if has_release "$ROLLING_TAG"; then
+              gh release delete "$ROLLING_TAG" --yes >/dev/null 2>&1 || true
+            fi
+            gh release create "$ROLLING_TAG" --title "自用语音翻译包（最新）" \
+              --notes "$note" --draft
+            gh release upload "$ROLLING_TAG" weihan-selfuse-debug.apk --clobber
+
+            gh release create "$tag" --title "融合 ${version}（构建 ${GITHUB_RUN_NUMBER}）" \
+              --notes "$note" --draft weihan-selfuse-debug.apk
+
+            echo "::notice::APK 已发为草稿 Release（${ROLLING_TAG} / ${tag}）。登录 GitHub 后在 Releases 页可见，直链 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${ROLLING_TAG}/weihan-selfuse-debug.apk （sha256 ${sha}）"
+            exit 0
+          fi
+
+          # 公开模式（private 仓库或显式放开）：滚动 tag 覆盖同一个文件，直链永远最新
           if has_release "$ROLLING_TAG"; then
-            gh release edit "$ROLLING_TAG" --title "自用语音翻译包（最新）" --notes "$note" "$edit_draft"
+            gh release edit "$ROLLING_TAG" --title "自用语音翻译包（最新）" --notes "$note" --draft=false
           else
-            gh release create "$ROLLING_TAG" --title "自用语音翻译包（最新）" --notes "$note" $create_draft
+            gh release create "$ROLLING_TAG" --title "自用语音翻译包（最新）" --notes "$note"
           fi
           gh release upload "$ROLLING_TAG" weihan-selfuse-debug.apk --clobber
 
@@ -302,14 +321,10 @@ jobs:
             echo "::notice::${tag} 已存在，跳过历史版本创建"
           else
             gh release create "$tag" --title "融合 ${version}（构建 ${GITHUB_RUN_NUMBER}）" \
-              --notes "$note" weihan-selfuse-debug.apk $create_draft
+              --notes "$note" weihan-selfuse-debug.apk
           fi
 
-          if [ "${DRAFT}" = "true" ]; then
-            echo "::notice::APK 已发为草稿 Release（${ROLLING_TAG} / ${tag}）。登录 GitHub 后在 Releases 页可见，直链 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${ROLLING_TAG}/weihan-selfuse-debug.apk （sha256 ${sha}）"
-          else
-            echo "::notice::已发布：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${ROLLING_TAG}/weihan-selfuse-debug.apk （sha256 ${sha}）"
-          fi
+          echo "::notice::已发布：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${ROLLING_TAG}/weihan-selfuse-debug.apk （sha256 ${sha}）"
 
       - name: 公开仓库说明（只出草稿包）
         if: ${{ needs.guard.outputs.artifact != 'true' }}
