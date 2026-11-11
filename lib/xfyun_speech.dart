@@ -68,7 +68,14 @@ class DartIoXfyunSocket implements XfyunSocket {
 }
 
 Future<XfyunSocket> openXfyunSocket(Uri uri) async {
-  final WebSocket socket = await WebSocket.connect(uri.toString());
+  // dart:io 的 WebSocket.connect 没有默认超时：端点不回握手时它会一直挂着，
+  // 上层所有 timeout 都还没开始计时。#56 的 live 用例就是这么卡满 5 分钟的。
+  final WebSocket socket =
+      await WebSocket.connect(uri.toString()).timeout(
+    const Duration(seconds: 12),
+    onTimeout: () => throw const SpeechException(
+        '连接讯飞服务超时（12 秒）· 检查手机网络或关闭全局代理'),
+  );
   return DartIoXfyunSocket(socket);
 }
 
@@ -565,7 +572,11 @@ class XfyunSpeechPort implements SpeechPort {
       rethrow;
     } finally {
       await subscription?.cancel();
-      await socket.close();
+      // close() 要等服务端回 close frame，服务端不回时不能把整轮结果一起拖死。
+      await socket.close().timeout(
+            const Duration(seconds: 3),
+            onTimeout: () {},
+          );
     }
   }
 
@@ -634,7 +645,10 @@ class XfyunSpeechPort implements SpeechPort {
       rethrow;
     } finally {
       await subscription?.cancel();
-      await socket.close();
+      await socket.close().timeout(
+            const Duration(seconds: 3),
+            onTimeout: () {},
+          );
     }
   }
 

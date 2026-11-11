@@ -70,12 +70,18 @@ void main() {
   translationConfig.ugCode = ugCode.isEmpty ? 'uy' : ugCode;
 
   test('E2E 真实链路：中文语音 → 维文译文 → 维语朗读', () async {
+    // 阶段日志：真实链路上任何一环挂住都要能立刻看出卡在哪，
+    // 否则只会得到一句「Test timed out after 5 minutes」。
+    // ignore: avoid_print
+    print('E2E live check: 中文方向 1/3 合成测试音…');
     // 用 TTS 造一段真实语音当「录音」，避免依赖 CI runner 上的物理麦克风。
     final XfyunSpeechPort source =
         XfyunSpeechPort(config: speechConfig, ttsMp3: false);
     final Uint8List pcm = await source.speak('你好', Language.chinese);
     expect(pcm.length, greaterThan(1000),
         reason: '合成的 PCM 太短，无法充当录音输入');
+    // ignore: avoid_print
+    print('E2E live check: 中文方向 2/3 测试音 ${pcm.length} 字节，开始三环…');
 
     // 刻意用 App 的默认端口与默认翻译链，覆盖设置页保存后的真实路径。
     final SpeechPipeline pipeline = SpeechPipeline(
@@ -84,6 +90,8 @@ void main() {
     );
     final SpeechTurn turn =
         await pipeline.run(pcm, TranslationDirection.zhToUg);
+    // ignore: avoid_print
+    print('E2E live check: 中文方向 3/3 三环完成');
 
     expect(turn.heard.contains('你好'), isTrue,
         reason: 'ASR 没识别出合成的中文语音');
@@ -106,6 +114,8 @@ void main() {
 
   if (ugVcn.trim().isNotEmpty) {
     test('E2E 真实链路：维语语音 → 中文译文 → 中文朗读', () async {
+      // ignore: avoid_print
+      print('E2E live check: 维语方向 1/3 合成测试音…');
       final XfyunSpeechPort source =
           XfyunSpeechPort(config: speechConfig, ttsMp3: false);
       final Uint8List pcm = await source.speak(
@@ -113,6 +123,8 @@ void main() {
         Language.uyghur,
       );
       expect(pcm.length, greaterThan(1000));
+      // ignore: avoid_print
+      print('E2E live check: 维语方向 2/3 测试音 ${pcm.length} 字节，开始三环…');
 
       final SpeechPipeline pipeline = SpeechPipeline(
         speech: const ConfigurableSpeechPort(),
@@ -120,6 +132,8 @@ void main() {
       );
       final SpeechTurn turn =
           await pipeline.run(pcm, TranslationDirection.ugToZh);
+      // ignore: avoid_print
+      print('E2E live check: 维语方向 3/3 三环完成');
 
       expect(turn.heard.trim(), isNotEmpty);
       expect(turn.translation.found, isTrue,

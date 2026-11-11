@@ -46,7 +46,10 @@ class DartIoTranslationGateway extends TranslationGateway {
       client.findProxy = (Uri _) => 'DIRECT';
     }
     try {
-      final HttpClientRequest request = await client.postUrl(uri);
+      // connectionTimeout 只管「连上」；DNS 卡住、服务端收下请求却一直不回，
+      // 这两个 await 会无限等。真机上表现就是「正在识别与翻译…」永远转圈。
+      final HttpClientRequest request =
+          await client.postUrl(uri).timeout(const Duration(seconds: 15));
       for (final MapEntry<String, String> entry in headers.entries) {
         request.headers.set(entry.key, entry.value);
       }
@@ -57,8 +60,12 @@ class DartIoTranslationGateway extends TranslationGateway {
       final List<int> bytes = utf8.encode(body);
       request.contentLength = bytes.length;
       request.add(bytes);
-      final HttpClientResponse response = await request.close();
-      final String payload = await response.transform(utf8.decoder).join();
+      final HttpClientResponse response =
+          await request.close().timeout(const Duration(seconds: 15));
+      final String payload = await response
+          .transform(utf8.decoder)
+          .join()
+          .timeout(const Duration(seconds: 15));
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw TranslationException('HTTP ${response.statusCode}: $payload');
       }
