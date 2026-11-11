@@ -167,7 +167,10 @@ void main() {
 }
 
 /// 假录音 / 播放端口：只记录调用，不触碰 record / audioplayers 平台通道。
-class _FakeAudioPort implements AudioPort {
+///
+/// 用 extends 而不是 implements：`levels` / `dispose` 在 AudioPort 里有默认实现，
+/// implements 只会继承签名、拿不到实现，得把两个成员都重写一遍。
+class _FakeAudioPort extends AudioPort {
   _FakeAudioPort(this.recorded);
 
   final Uint8List recorded;
