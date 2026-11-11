@@ -9,6 +9,7 @@ import 'conversation.dart';
 import 'default_speech.dart';
 import 'default_translator.dart';
 import 'device_audio.dart';
+import 'glass.dart';
 import 'speech_config.dart';
 import 'speech_pipeline.dart';
 import 'theme.dart';
@@ -235,42 +236,47 @@ class _ConversationPageState extends State<ConversationPage> {
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle.light,
       child: Scaffold(
-        body: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: <Widget>[
-            _Header(
-              onFlip: _flipDirection,
-              onSettings: _openSettings,
-            ),
-            _StatusStrip(
-              direction: direction,
-              speechAvailable: speechReady,
-              cloudEnabled: translationConfig.hasCloudConfig,
-            ),
-            Expanded(
-              child: _state.messages.isEmpty
-                  ? const _EmptyState()
-                  : _buildConversation(
-                      onSpeak: speechReady
-                          ? (String text, Language language) {
-                              _speak(text, language);
-                            }
-                          : null,
-                    ),
-            ),
-            if (_notice.isNotEmpty) _NoticeBar(text: _notice),
-            _Composer(
-              controller: _controller,
-              direction: direction,
-              speechReady: speechReady,
-              recording: _recording,
-              onSend: _busy || _recording ? null : _submit,
-              onVoice: speechReady
-                  ? () {
-                      _tapVoice();
-                    }
-                  : null,
-            ),          ],
+        // 底色交给 AuroraBackground，玻璃面板才能"透"出颜色
+        backgroundColor: Colors.transparent,
+        body: AuroraBackground(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              _Header(
+                onFlip: _flipDirection,
+                onSettings: _openSettings,
+              ),
+              _StatusStrip(
+                direction: direction,
+                speechAvailable: speechReady,
+                cloudEnabled: translationConfig.hasCloudConfig,
+              ),
+              Expanded(
+                child: _state.messages.isEmpty
+                    ? const _EmptyState()
+                    : _buildConversation(
+                        onSpeak: speechReady
+                            ? (String text, Language language) {
+                                _speak(text, language);
+                              }
+                            : null,
+                      ),
+              ),
+              if (_notice.isNotEmpty) _NoticeBar(text: _notice),
+              _Composer(
+                controller: _controller,
+                direction: direction,
+                speechReady: speechReady,
+                recording: _recording,
+                onSend: _busy || _recording ? null : _submit,
+                onVoice: speechReady
+                    ? () {
+                        _tapVoice();
+                      }
+                    : null,
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -390,12 +396,11 @@ class _StatusStrip extends StatelessWidget {
     final bool ready = cloudEnabled && speechAvailable;
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
-      child: Container(
+      child: GlassPanel(
+        corner: 16,
+        fillOpacity: 0.78,
+        tint: ready ? AppColors.primarySoft : AppColors.sandSoft,
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-        decoration: BoxDecoration(
-          color: ready ? AppColors.primarySoft : AppColors.sandSoft,
-          borderRadius: BorderRadius.circular(14),
-        ),
         child: Row(
           children: <Widget>[
             Icon(
@@ -633,22 +638,13 @@ class _Composer extends StatelessWidget {
     final String voiceLabel = recording
         ? '正在录音 · 点击结束'
         : (speechReady ? '点击说话 · 再点结束' : '按住说话 · 待接入');
-    return Container(
-      decoration: const BoxDecoration(
-        color: AppColors.card,
-        border: Border(top: BorderSide(color: AppColors.line)),
-        boxShadow: <BoxShadow>[
-          BoxShadow(
-            color: Color(0x0F0B3A36),
-            blurRadius: 16,
-            offset: Offset(0, -4),
-          ),
-        ],
-      ),
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
+      child: GlassPanel(
+        corner: 26,
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
+        child: SafeArea(
+          top: false,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
@@ -667,6 +663,8 @@ class _Composer extends StatelessWidget {
                       style: const TextStyle(fontSize: 15.5, height: 1.4),
                       decoration: InputDecoration(
                         hintText: '输入${direction.source.label}…',
+                        filled: true,
+                        fillColor: Colors.white.withOpacity(0.62),
                         contentPadding: const EdgeInsets.symmetric(
                           horizontal: 16,
                           vertical: 13,
@@ -979,10 +977,15 @@ class _SettingsDialogState extends State<_SettingsDialog> {
         ? _provider.defaultEndpoint
         : translationConfig.endpoint.trim();
     return Dialog(
+      backgroundColor: Colors.transparent,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
       insetPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 24),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 460, maxHeight: 620),
-        child: Column(
+      child: GlassPanel(
+        corner: 26,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 460, maxHeight: 620),
+          child: Column(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
             Padding(
@@ -1171,7 +1174,8 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                       ),
                       child: Text(
                         '当前：${_provider.label} · $shownEndpoint'
-                        ' · 维语码 ${translationConfig.ugCode} · 语音诊断版',
+                        ' · 维语码 ${translationConfig.ugCode} · 语音诊断版'
+                        ' · 玻璃 ${Glass.spec.label}',
                         style: const TextStyle(
                           fontSize: 11.5,
                           height: 1.6,
@@ -1207,6 +1211,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
             ),
           ],
         ),
+      ),
       ),
     );
   }
