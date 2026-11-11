@@ -97,12 +97,17 @@ jobs:
           set -euo pipefail
           # 仓库从 private 转 public 时，之前发布的自带凭证包会突然变成人人可下载。
           # 这里把已公开的 Release 全部改回草稿，让下载重新需要登录账号。
-          gh release list --limit 200 --json tagName,isDraft \
-            --jq '.[] | select(.isDraft == false) | .tagName' > /tmp/published_tags.txt || true
-          if [ ! -s /tmp/published_tags.txt ]; then
-            echo "::notice::没有已公开的 Release 需要撤回"
-            exit 0
-          fi
+          # 用 gh api + python 解析，而不是 gh release list --json：后者依赖较新的 gh，
+          # 老版本查不到 isDraft 字段会静默失败（#6 就因此漏撤了 v0.2.0-build5）。
+          gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > /tmp/releases.json
+          python3 - <<'PY' > /tmp/published_tags.txt
+          import json
+          data = json.load(open('/tmp/releases.json', encoding='utf-8'))
+          for rel in data:
+              if not rel.get('draft'):
+                  print(rel['tag_name'])
+          PY
+          echo "::notice::已公开的 Release 共 $(wc -l < /tmp/published_tags.txt | tr -d ' ') 个，逐个撤回为草稿"
           while read -r tag; do
             [ -z "$tag" ] && continue
             if gh release edit "$tag" --draft >/dev/null 2>&1; then

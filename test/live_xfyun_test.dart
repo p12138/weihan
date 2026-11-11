@@ -46,12 +46,24 @@ void main() {
       ttsMp3: false,
     );
 
-    final Uint8List pcm = await speech.speak('你好', Language.chinese);
+    // 每段单独设超时：讯飞偶发单段卡住（#46 就是整体 120s 被吃满，
+    // 日志里看不出卡在哪一环）。分段超时能直接指出是合成还是识别。
+    const Duration stageBudget = Duration(seconds: 70);
+
+    // ignore: avoid_print
+    print('Xfyun live check: 开始中文合成…');
+    final Uint8List pcm = await speech
+        .speak('你好', Language.chinese)
+        .timeout(stageBudget);
     // ignore: avoid_print
     print('Xfyun live check: 中文合成 ${pcm.length} 字节');
     expect(pcm.length, greaterThan(1000));
 
-    final String heard = await speech.listen(pcm, Language.chinese);
+    // ignore: avoid_print
+    print('Xfyun live check: 开始中文识别…');
+    final String heard = await speech
+        .listen(pcm, Language.chinese)
+        .timeout(stageBudget);
     // ignore: avoid_print
     print('Xfyun live check: 中文识别结果=$heard diagnostic=${config.lastDiagnostic}');
     expect(heard, isNot(isEmpty));
@@ -59,12 +71,15 @@ void main() {
     // 维语发音人属于账号侧授权：配了 vcn 才验；没开通只提示，不把门禁判红。
     if (ugVcn.isNotEmpty) {
       try {
-        final Uint8List ugAudio =
-            await speech.speak('ياخشىمۇسىز', Language.uyghur);
+        final Uint8List ugAudio = await speech
+            .speak('ياخشىمۇسىز', Language.uyghur)
+            .timeout(stageBudget);
         // ignore: avoid_print
         print('Xfyun live check: 维语合成 ${ugAudio.length} 字节');
         expect(ugAudio.length, greaterThan(1000));
-        final String ugHeard = await speech.listen(ugAudio, Language.uyghur);
+        final String ugHeard = await speech
+            .listen(ugAudio, Language.uyghur)
+            .timeout(stageBudget);
         // ignore: avoid_print
         print('Xfyun live check: 维语识别结果=$ugHeard');
       } on Object catch (error) {
