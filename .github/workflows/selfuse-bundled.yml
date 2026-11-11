@@ -93,33 +93,57 @@ jobs:
         if: ${{ steps.decide.outputs.draft == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ASSET_NAME: weihan-selfuse-debug.apk
         run: |
           set -euo pipefail
           # 仓库从 private 转 public 时，之前发布的自带凭证包会突然变成人人可下载。
-          # 这里把已公开的 Release 全部改回草稿，让下载重新需要登录账号。
-          # 用 gh api + python 解析，而不是 gh release list --json：后者依赖较新的 gh，
-          # 老版本查不到 isDraft 字段会静默失败（#6 就因此漏撤了 v0.2.0-build5）。
+          # 这里尽量把它收回：优先转草稿，转不了就删 APK 附件，再不行删整条 Release。
+          # 全部走 REST（gh api），因为 gh 子命令在不同 runner 版本上可用性不一致，
+          # 而且失败时必须把 stderr 打出来——#7/#8 就是因为 2>/dev/null 才看不出原因。
+          gh --version | head -1
           gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > /tmp/releases.json
-          python3 - <<'PY' > /tmp/published_tags.txt
-          import json
-          data = json.load(open('/tmp/releases.json', encoding='utf-8'))
-          for rel in data:
-              if not rel.get('draft'):
-                  print(rel['tag_name'])
+          python3 - <<'PY'
+          import json, os, subprocess
+
+          repo = os.environ['GITHUB_REPOSITORY']
+          asset_name = os.environ['ASSET_NAME']
+
+          def api(*args):
+              return subprocess.run(['gh', 'api', *args], capture_output=True, text=True)
+
+          releases = json.load(open('/tmp/releases.json', encoding='utf-8'))
+          published = [r for r in releases if not r.get('draft')]
+          print('::notice::已公开的 Release 共 %d 个，逐个尝试收回' % len(published))
+
+          for rel in published:
+              tag, rid = rel['tag_name'], rel['id']
+              # 1) 转草稿（GitHub 对已发布的 Release 通常直接拒绝）
+              p = api('-X', 'PATCH', 'repos/%s/releases/%s' % (repo, rid), '-F', 'draft=true')
+              if p.returncode == 0:
+                  print('::notice::已把 %s 撤回为草稿（公开页不再匿名可下载）' % tag)
+                  continue
+              print('::notice::%s 转草稿被拒：%s' % (tag, (p.stderr or '').strip()[:160]))
+
+              # 2) 删掉它里面的 APK 附件
+              assets = [a for a in rel.get('assets', []) if a['name'] == asset_name]
+              removed = 0
+              for asset in assets:
+                  d = api('-X', 'DELETE', 'repos/%s/releases/assets/%s' % (repo, asset['id']))
+                  if d.returncode == 0:
+                      removed += 1
+                  else:
+                      print('::warning::删除 %s 的附件失败：%s' % (tag, (d.stderr or '').strip()[:160]))
+              if removed:
+                  print('::notice::%s 已删除 %d 个 APK 附件，公开页不再有可下载文件' % (tag, removed))
+                  continue
+
+              # 3) 最后手段：删掉整条 Release（git tag 保留，不影响代码）
+              d = api('-X', 'DELETE', 'repos/%s/releases/%s' % (repo, rid))
+              if d.returncode == 0:
+                  print('::notice::已删除 Release %s（tag 保留）' % tag)
+              else:
+                  print('::warning::%s 彻底清理失败：%s' % (tag, (d.stderr or '').strip()[:160]))
           PY
-          echo "::notice::已公开的 Release 共 $(wc -l < /tmp/published_tags.txt | tr -d ' ') 个，逐个撤回为草稿"
-          while read -r tag; do
-            [ -z "$tag" ] && continue
-            if gh release edit "$tag" --draft >/dev/null 2>&1; then
-              echo "::notice::已把 ${tag} 撤回为草稿（公开仓库不再匿名可下载）"
-            elif gh release delete-asset "$tag" weihan-selfuse-debug.apk --yes >/dev/null 2>&1; then
-              # GitHub API 不允许把已发布的 Release 改回草稿（#7 实测被拒），
-              # 退一步删掉其中的 APK 附件：页面还在，但已经没有可下载的凭证包。
-              echo "::notice::${tag} 无法转回草稿，已删除其中的 APK 附件；公开页面不再有可下载文件"
-            else
-              echo "::warning::${tag} 撤回失败，请到 Releases 页手动删除里面的 weihan-selfuse-debug.apk"
-            fi
-          done < /tmp/published_tags.txt
 
   bundled-apk:
     name: Android 自带凭证 APK
@@ -295,7 +319,9 @@ jobs:
             # 所以草稿模式下先删掉同名 Release 再以草稿重建：
             # 任何时刻公开页面上都不会出现含凭证的包。tag 本身保留（不加 --cleanup-tag）。
             if has_release "$ROLLING_TAG"; then
-              gh release delete "$ROLLING_TAG" --yes >/dev/null 2>&1 || true
+              # 不吞 stderr：删不掉就让它显式失败，比默默留下一个公开包好。
+              gh release delete "$ROLLING_TAG" --yes \
+                || echo "::warning::删除旧的 ${ROLLING_TAG} 失败，下面创建可能报 already exists"
             fi
             gh release create "$ROLLING_TAG" --title "自用语音翻译包（最新）" \
               --notes "$note" --draft
