@@ -47,7 +47,7 @@ void main() {
   final String ugTranslated = (live['ug_translated'] as String?) ?? '你好';
   final Uint8List scriptAudio = _scriptAudio();
 
-  testWidgets('E2E UI：点击说话 → 识别/译文气泡 → 自动朗读 → 手动朗读',
+  testWidgets('E2E UI：按住说话 → 识别/译文气泡 → 自动朗读 → 手动朗读',
       (WidgetTester tester) async {
     final _FakeAudioPort mic = _FakeAudioPort(scriptAudio);
 
@@ -59,20 +59,19 @@ void main() {
       ),
     ));
 
-    final Finder voice = find.byWidgetPredicate(
-      (Widget widget) => widget is TextButton,
-    );
+    final Finder voice = find.byKey(const ValueKey<String>('voice-button'));
     expect(voice, findsOneWidget);
-    expect(tester.widget<TextButton>(voice).onPressed, isNotNull,
-        reason: '语音端口可用时按钮必须能点');
+    expect(find.text('按住说话 · 松手翻译'), findsOneWidget);
 
-    await tester.tap(voice);
-    await tester.pumpAndSettle();
-    expect(mic.starts, 1);
+    // 按住说话：按下当场开始录音，松手才结束 —— 不需要再点第二次。
+    final TestGesture hold = await tester.startGesture(tester.getCenter(voice));
+    await tester.pump();
+    await tester.pump();
+    expect(mic.starts, 1, reason: '按下应立即开始录音');
     // 「正在录音」同时出现在 notice 和按钮 label 里，用按钮的精确文案断言状态切换。
-    expect(find.text('正在录音 · 点击结束'), findsOneWidget);
+    expect(find.text('松手结束 · 正在录音'), findsOneWidget);
 
-    await tester.tap(voice);
+    await hold.up();
     await tester.pumpAndSettle();
     expect(mic.stops, 1);
     expect(find.text(zhHeard), findsOneWidget, reason: '识别原文气泡缺失');
@@ -103,12 +102,11 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.textContaining('ئۇيغۇرچە → 中文'), findsOneWidget);
 
-    final Finder voice = find.byWidgetPredicate(
-      (Widget widget) => widget is TextButton,
-    );
-    await tester.tap(voice);
-    await tester.pumpAndSettle();
-    await tester.tap(voice);
+    final Finder voice = find.byKey(const ValueKey<String>('voice-button'));
+    final TestGesture hold = await tester.startGesture(tester.getCenter(voice));
+    await tester.pump();
+    await tester.pump();
+    await hold.up();
     await tester.pumpAndSettle();
 
     expect(find.text(ugHeard), findsOneWidget);

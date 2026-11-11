@@ -8,6 +8,7 @@ import 'default_speech.dart';
 import 'default_translator.dart';
 import 'device_audio.dart';
 import 'glass.dart';
+import 'palette_controller.dart';
 import 'speech_config.dart';
 import 'speech_pipeline.dart';
 import 'theme.dart';
@@ -38,6 +39,14 @@ class _ConversationPageState extends State<ConversationPage> {
   String _notice = '';
   bool _busy = false;
   bool _recording = false;
+
+  /// 手指是否还按在语音按钮上。开始录音是异步的，这期间用户可能已经松手，
+  /// 用它决定「松手时是要真的结束，还是把这段空录音丢掉」。
+  bool _holding = false;
+
+  /// 正在申请权限 / 启动录音，避免连点重复起流。
+  bool _starting = false;
+
   int _nextId = 0;
   AudioPort? _audioPort;
   late final SpeechPipeline _pipeline = SpeechPipeline(
@@ -110,20 +119,27 @@ class _ConversationPageState extends State<ConversationPage> {
     });
   }
 
-  Future<void> _tapVoice() async {
-    if (_recording) {
-      await _finishVoice();
+  /// 按住按钮：申请权限并开始录音。
+  ///
+  /// 录音启动是异步的，用户可能在这几百毫秒里就松手了。此时不能直接进入
+  /// 「正在录音」，而是记下 [_holding]，启动完成后发现手指已抬走，就把这段
+  /// 空录音丢掉 —— 否则会向云端提交一段 0 字节音频，再收到一个莫名其妙的报错。
+  Future<void> _beginVoice() async {
+    if (_starting || _recording || _busy) {
       return;
     }
-    if (_busy) {
+    _holding = true;
+    if (!widget.speech.isAvailable) {
+      setState(() => _notice = '语音未接入 · 到设置页填讯飞 APPID / APIKey / APISecret');
       return;
     }
+    _starting = true;
     try {
       final bool granted = await _audio().hasPermission();
+      if (!mounted) {
+        return;
+      }
       if (!granted) {
-        if (!mounted) {
-          return;
-        }
         setState(() => _notice = '需要麦克风权限才能在系统设置里开启录音');
         return;
       }
@@ -131,15 +147,41 @@ class _ConversationPageState extends State<ConversationPage> {
       if (!mounted) {
         return;
       }
+      if (!_holding) {
+        // 松手比启动还快：这段录音作废
+        await _stopSilently();
+        return;
+      }
       setState(() {
         _recording = true;
-        _notice = '正在录音 · 说完再点一次按钮';
+        _notice = '正在录音 · 松手结束';
       });
     } on Object catch (error) {
       if (!mounted) {
         return;
       }
       setState(() => _notice = '无法开始录音：${_brief(error.toString())}');
+    } finally {
+      _starting = false;
+    }
+  }
+
+  /// 松手：结束录音并跑「识别 → 翻译 → 朗读」三环。
+  Future<void> _endVoice() async {
+    _holding = false;
+    if (!_recording) {
+      // 还在启动阶段，交给 _beginVoice 里的 _holding 判断
+      return;
+    }
+    await _finishVoice();
+  }
+
+  /// 丢弃一段录音：结束不抛错，失败也只是日志。
+  Future<void> _stopSilently() async {
+    try {
+      await _audio().stopRecord();
+    } on Object catch (error) {
+      debugPrint('丢弃录音失败：$error');
     }
   }
 
@@ -152,6 +194,16 @@ class _ConversationPageState extends State<ConversationPage> {
     final TranslationDirection direction = _state.direction;
     try {
       final Uint8List pcm = await _audio().stopRecord();
+      if (pcm.isEmpty) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _busy = false;
+          _notice = '没录到声音 · 请按住按钮说完再松手';
+        });
+        return;
+      }
       final SpeechTurn turn = await _pipeline.run(pcm, direction);
       if (!mounted) {
         return;
@@ -212,6 +264,25 @@ class _ConversationPageState extends State<ConversationPage> {
     });
   }
 
+  /// 直接点语言胶囊：把它设为「我说的话」。
+  /// 已经是当前源语言就不动，避免点一下什么都没变化却闪一下动画。
+  void _selectSource(Language language) {
+    if (_state.direction.source == language) {
+      return;
+    }
+    _flipDirection();
+  }
+
+  /// 顶栏的调色板按钮：按顺序切到下一套配色。
+  /// 只改全局色板并通知，MaterialApp 会整棵树重建。
+  void _cyclePalette() {
+    final List<BrandPalette> all = BrandPalette.all;
+    final int index =
+        all.indexWhere((BrandPalette item) => item.id == AppColors.palette.id);
+    final BrandPalette next = all[(index + 1) % all.length];
+    PaletteController.instance.select(next);
+  }
+
   Future<void> _openSettings() async {
     await showDialog<void>(
       context: context,
@@ -241,13 +312,15 @@ class _ConversationPageState extends State<ConversationPage> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
               _Header(
-                onFlip: _flipDirection,
                 onSettings: _openSettings,
+                onTheme: _cyclePalette,
               ),
-              _StatusStrip(
+              _DirectionCard(
                 direction: direction,
                 speechAvailable: speechReady,
                 cloudEnabled: translationConfig.hasCloudConfig,
+                onFlip: _flipDirection,
+                onSelect: _selectSource,
               ),
               Expanded(
                 child: _state.messages.isEmpty
@@ -266,12 +339,10 @@ class _ConversationPageState extends State<ConversationPage> {
                 direction: direction,
                 speechReady: speechReady,
                 recording: _recording,
+                busy: _busy,
                 onSend: _busy || _recording ? null : _submit,
-                onVoice: speechReady
-                    ? () {
-                        _tapVoice();
-                      }
-                    : null,
+                onVoiceStart: _beginVoice,
+                onVoiceEnd: _endVoice,
               ),
             ],
           ),
@@ -294,26 +365,23 @@ class _ConversationPageState extends State<ConversationPage> {
 
 typedef SpeakCallback = void Function(String text, Language language);
 
-/// 顶栏：品牌标识 + 标语 + 两个操作。
+/// 顶栏：品牌标识 + 标语 + 操作。
 ///
 /// 没用 AppBar：需要渐变底 + 徽标，AppBar 的 flexibleSpace 会带来
 /// 额外的 elevation / 滚动变色逻辑，自绘容器更可控。
 class _Header extends StatelessWidget {
-  const _Header({
-    required this.onFlip,
-    required this.onSettings,
-  });
+  const _Header({required this.onSettings, required this.onTheme});
 
-  final VoidCallback onFlip;
   final VoidCallback onSettings;
+  final VoidCallback onTheme;
 
   @override
   Widget build(BuildContext context) {
     final double topInset = MediaQuery.of(context).padding.top;
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         gradient: AppColors.headerGradient,
-        boxShadow: <BoxShadow>[
+        boxShadow: const <BoxShadow>[
           BoxShadow(
             color: Color(0x1A0B3A36),
             blurRadius: 18,
@@ -353,10 +421,10 @@ class _Header extends StatelessWidget {
             ),
           ),
           IconButton(
-            tooltip: '切换翻译方向',
-            onPressed: onFlip,
+            tooltip: '切换配色主题',
+            onPressed: onTheme,
             color: Colors.white,
-            icon: const Icon(Icons.swap_horiz),
+            icon: const Icon(Icons.palette_outlined),
           ),
           IconButton(
             tooltip: '云端翻译与语音设置',
@@ -370,20 +438,27 @@ class _Header extends StatelessWidget {
   }
 }
 
-/// 状态条：方向 / 翻译通道 / 语音通道，一条读懂当前配置。
+/// 方向切换卡：中文 / 维语两枚语言胶囊 + 中间交换键，下面一行是通道状态。
 ///
-/// 文案格式被既有测试依赖（`中文 → ئۇيغۇرچە`、`演示词库`、`语音待接入`），
+/// 语言与颜色是绑定关系：中文侧恒为主色，维文侧恒为强调色。换主题时两个颜色
+/// 一起换，但「哪种语言是哪个颜色」不会变 —— 不看字也能认出当前是谁在说。
+///
+/// 状态行文案被既有测试依赖（`中文 → ئۇيغۇرچە`、`演示词库`、`语音待接入`），
 /// 只能改样式不能改字符串结构。
-class _StatusStrip extends StatelessWidget {
-  const _StatusStrip({
+class _DirectionCard extends StatelessWidget {
+  const _DirectionCard({
     required this.direction,
     required this.speechAvailable,
     required this.cloudEnabled,
+    required this.onFlip,
+    required this.onSelect,
   });
 
   final TranslationDirection direction;
   final bool speechAvailable;
   final bool cloudEnabled;
+  final VoidCallback onFlip;
+  final ValueChanged<Language> onSelect;
 
   @override
   Widget build(BuildContext context) {
@@ -392,33 +467,191 @@ class _StatusStrip extends StatelessWidget {
     final String label =
         '${direction.source.label} → ${direction.target.label} · $modeLabel · 语音$speechLabel';
     final bool ready = cloudEnabled && speechAvailable;
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
       child: GlassPanel(
-        corner: 16,
+        corner: 22,
         fillOpacity: 0.78,
-        tint: ready ? AppColors.primarySoft : AppColors.sandSoft,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
-        child: Row(
+        padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            Icon(
-              ready ? Icons.check_circle_outline : Icons.info_outline,
-              size: 16,
-              color: ready ? AppColors.primary : const Color(0xFF9A7233),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                label,
-                style: TextStyle(
-                  fontSize: 12.5,
-                  height: 1.3,
-                  fontWeight: FontWeight.w600,
-                  color: ready ? AppColors.primaryDeep : const Color(0xFF7A5A22),
+            Row(
+              children: <Widget>[
+                Expanded(
+                  child: _LanguagePill(
+                    language: Language.chinese,
+                    active: direction.source == Language.chinese,
+                    onTap: () => onSelect(Language.chinese),
+                  ),
                 ),
-              ),
+                _SwapButton(onTap: onFlip),
+                Expanded(
+                  child: _LanguagePill(
+                    language: Language.uyghur,
+                    active: direction.source == Language.uyghur,
+                    onTap: () => onSelect(Language.uyghur),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: <Widget>[
+                Icon(
+                  ready ? Icons.check_circle_outline : Icons.info_outline,
+                  size: 13,
+                  color: ready ? AppColors.primary : AppColors.accentInk,
+                ),
+                const SizedBox(width: 5),
+                Expanded(
+                  child: Text(
+                    label,
+                    maxLines: 2,
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      height: 1.3,
+                      fontWeight: FontWeight.w600,
+                      color: ready ? AppColors.primaryDeep : AppColors.accentInk,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 语言胶囊：激活态用该语言的主题色渐变，未激活态用同色系的浅底细边。
+/// 左侧「汉 / 维」小方块是给一眼扫过用的，右边的文字才是完整语言名。
+class _LanguagePill extends StatelessWidget {
+  const _LanguagePill({
+    required this.language,
+    required this.active,
+    required this.onTap,
+  });
+
+  final Language language;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool uyghur = language.isRtl;
+    final Color color = AppColors.language(uyghur);
+    final Color soft = AppColors.languageSoft(uyghur);
+    final String badge = uyghur ? '维' : '汉';
+
+    return Semantics(
+      button: true,
+      selected: active,
+      label: '${language.label}${active ? '（我在说）' : ''}',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+          decoration: BoxDecoration(
+            gradient: active ? AppColors.gradientOf(uyghur) : null,
+            color: active ? null : soft.withOpacity(0.7),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: active ? Colors.transparent : color.withOpacity(0.30),
+              width: 1,
+            ),
+            boxShadow: active
+                ? <BoxShadow>[
+                    BoxShadow(
+                      color: color.withOpacity(0.30),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: <Widget>[
+              Container(
+                width: 22,
+                height: 22,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: active ? Colors.white.withOpacity(0.24) : color,
+                  borderRadius: BorderRadius.circular(7),
+                ),
+                child: Text(
+                  badge,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    height: 1,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 7),
+              Flexible(
+                child: Directionality(
+                  textDirection: uyghur ? TextDirection.rtl : TextDirection.ltr,
+                  child: Text(
+                    language.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: uyghur ? 13 : 13.5,
+                      height: 1.2,
+                      fontWeight: FontWeight.w700,
+                      color: active ? Colors.white : color,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 中间的交换键。图标用 swap_horiz，左右对称所以不做翻转动画，
+/// 变化体现在两侧胶囊的渐变切换上。
+class _SwapButton extends StatelessWidget {
+  const _SwapButton({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 7),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Colors.white,
+          border: Border.all(color: AppColors.line),
+          boxShadow: <BoxShadow>[
+            BoxShadow(
+              color: AppColors.primaryDeep.withOpacity(0.10),
+              blurRadius: 10,
+              offset: const Offset(0, 3),
+            ),
+          ],
+        ),
+        child: IconButton(
+          tooltip: '切换翻译方向',
+          onPressed: onTap,
+          icon: const Icon(Icons.swap_horiz, size: 20),
+          color: AppColors.primary,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints.tightFor(width: 40, height: 40),
         ),
       ),
     );
@@ -449,7 +682,7 @@ class _EmptyState extends StatelessWidget {
                   width: 92,
                   height: 92,
                   decoration: BoxDecoration(
-                    gradient: const LinearGradient(
+                    gradient: LinearGradient(
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                       colors: <Color>[Color(0xFF1B7168), AppColors.primaryDeep],
@@ -507,9 +740,9 @@ class _EmptyState extends StatelessWidget {
                 ),
                 const SizedBox(height: 24),
                 const _HintRow(
-                  icon: Icons.mic_none,
-                  title: '点一下麦克风说话',
-                  detail: '说完再点一次，自动识别并翻译',
+                  icon: Icons.touch_app_outlined,
+                  title: '按住按钮说话',
+                  detail: '松手就自动识别并翻译，说完立刻听到译文',
                 ),
                 const SizedBox(height: 14),
                 const _HintRow(
@@ -564,7 +797,7 @@ class _HintRow extends StatelessWidget {
             children: <Widget>[
               Text(
                 title,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 13.5,
                   fontWeight: FontWeight.w600,
                   color: AppColors.ink,
@@ -593,7 +826,7 @@ class _NoticeBar extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          const Icon(
+          Icon(
             Icons.campaign_outlined,
             size: 15,
             color: AppColors.inkMuted,
@@ -620,22 +853,23 @@ class _Composer extends StatelessWidget {
     required this.direction,
     required this.speechReady,
     required this.recording,
+    required this.busy,
     required this.onSend,
-    required this.onVoice,
+    required this.onVoiceStart,
+    required this.onVoiceEnd,
   });
 
   final TextEditingController controller;
   final TranslationDirection direction;
   final bool speechReady;
   final bool recording;
+  final bool busy;
   final VoidCallback? onSend;
-  final VoidCallback? onVoice;
+  final VoidCallback onVoiceStart;
+  final VoidCallback onVoiceEnd;
 
   @override
   Widget build(BuildContext context) {
-    final String voiceLabel = recording
-        ? '正在录音 · 点击结束'
-        : (speechReady ? '点击说话 · 再点结束' : '按住说话 · 待接入');
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
       child: GlassPanel(
@@ -669,15 +903,15 @@ class _Composer extends StatelessWidget {
                         ),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(22),
-                          borderSide: const BorderSide(color: AppColors.line),
+                          borderSide: BorderSide(color: AppColors.line),
                         ),
                         enabledBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(22),
-                          borderSide: const BorderSide(color: AppColors.line),
+                          borderSide: BorderSide(color: AppColors.line),
                         ),
                         focusedBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(22),
-                          borderSide: const BorderSide(
+                          borderSide: BorderSide(
                             color: AppColors.primary,
                             width: 1.6,
                           ),
@@ -693,34 +927,221 @@ class _Composer extends StatelessWidget {
                 ],
               ),
               const SizedBox(height: 10),
-              // 全页唯一的 TextButton：既有 UI 测试用它判定「语音入口是否可用」，
-              // 换成别的按钮类型会让回归断言失效，改动这里要同步改测试。
+              // 按住说话：整页唯一的语音入口，测试用 Key('voice-button') 定位。
               SizedBox(
                 width: double.infinity,
-                child: TextButton.icon(
-                  onPressed: onVoice,
-                  icon: Icon(recording ? Icons.stop_circle : Icons.mic),
-                  label: Text(voiceLabel),
-                  style: TextButton.styleFrom(
-                    minimumSize: const Size(0, 54),
-                    backgroundColor:
-                        recording ? AppColors.coral : AppColors.primary,
-                    foregroundColor: Colors.white,
-                    disabledBackgroundColor: AppColors.line,
-                    disabledForegroundColor: AppColors.inkMuted,
-                    shape: const StadiumBorder(),
-                    textStyle: const TextStyle(
-                      fontSize: 15.5,
-                      fontWeight: FontWeight.w600,
-                      letterSpacing: 0.3,
-                    ),
-                  ),
+                child: _VoiceButton(
+                  ready: speechReady,
+                  recording: recording,
+                  busy: busy,
+                  onStart: onVoiceStart,
+                  onEnd: onVoiceEnd,
                 ),
               ),
             ],
           ),
         ),
       ),
+    );
+  }
+}
+
+/// 按住说话按钮。
+///
+/// 用 [Listener] 而不是 GestureDetector：手势竞技场要等手指抬起才判胜负，
+/// 而这里「按下」就必须立刻开始录音。Listener 拿到的是原始指针事件，
+/// 按下、抬起、被系统打断（来电、下拉通知栏）都能第一时间响应。
+///
+/// 手指滑出按钮范围再松开也能收到 up —— 指针事件会继续投递给按下时的命中路径，
+/// 不会出现「录着录着一松手停不下来」。
+class _VoiceButton extends StatefulWidget {
+  const _VoiceButton({
+    required this.ready,
+    required this.recording,
+    required this.busy,
+    required this.onStart,
+    required this.onEnd,
+  });
+
+  final bool ready;
+  final bool recording;
+  final bool busy;
+  final VoidCallback onStart;
+  final VoidCallback onEnd;
+
+  @override
+  State<_VoiceButton> createState() => _VoiceButtonState();
+}
+
+class _VoiceButtonState extends State<_VoiceButton> {
+  /// 手指是否按在按钮上：只影响视觉反馈，录音状态由父层管。
+  bool _down = false;
+
+  bool get _enabled => widget.ready && !widget.busy;
+
+  String get _label {
+    if (!widget.ready) {
+      return '按住说话 · 待接入';
+    }
+    if (widget.recording) {
+      return '松手结束 · 正在录音';
+    }
+    if (widget.busy) {
+      return '正在识别与翻译…';
+    }
+    return '按住说话 · 松手翻译';
+  }
+
+  IconData get _icon {
+    if (!widget.ready) {
+      return Icons.mic_off_outlined;
+    }
+    if (widget.recording) {
+      return Icons.graphic_eq;
+    }
+    return widget.busy ? Icons.cloud_sync_outlined : Icons.mic;
+  }
+
+  void _press() {
+    setState(() => _down = true);
+    widget.onStart();
+  }
+
+  void _release() {
+    if (_down) {
+      setState(() => _down = false);
+    }
+    widget.onEnd();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool active = widget.recording;
+    final bool pressed = active || _down;
+
+    // 录音中换成警示色渐变，和空闲时的品牌渐变拉开距离
+    final LinearGradient? gradient = !_enabled
+        ? null
+        : pressed
+            ? LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: <Color>[
+                  AppColors.coral,
+                  Color.lerp(AppColors.coral, Colors.black, 0.24) ??
+                      AppColors.coral,
+                ],
+              )
+            : AppColors.gradient;
+
+    return Semantics(
+      button: true,
+      enabled: _enabled,
+      label: _label,
+      hint: '按住不动说话，松开手指结束',
+      child: Listener(
+        key: const ValueKey<String>('voice-button'),
+        behavior: HitTestBehavior.opaque,
+        onPointerDown: (_) => _press(),
+        onPointerUp: (_) => _release(),
+        onPointerCancel: (_) => _release(),
+        child: AnimatedScale(
+          scale: pressed ? 0.975 : 1,
+          duration: const Duration(milliseconds: 110),
+          curve: Curves.easeOut,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            curve: Curves.easeOut,
+            height: 58,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            decoration: BoxDecoration(
+              gradient: gradient,
+              color: _enabled ? null : AppColors.line,
+              borderRadius: BorderRadius.circular(29),
+              boxShadow: _enabled
+                  ? <BoxShadow>[
+                      BoxShadow(
+                        color: (active ? AppColors.coral : AppColors.primaryDeep)
+                            .withOpacity(0.28),
+                        blurRadius: 16,
+                        offset: const Offset(0, 6),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: <Widget>[
+                Container(
+                  width: 30,
+                  height: 30,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    color: _enabled
+                        ? Colors.white.withOpacity(0.22)
+                        : Colors.white.withOpacity(0.55),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    _icon,
+                    size: 18,
+                    color: _enabled ? Colors.white : AppColors.inkMuted,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Flexible(
+                  child: Text(
+                    _label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 15.5,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.3,
+                      color: _enabled ? Colors.white : AppColors.inkMuted,
+                    ),
+                  ),
+                ),
+                if (_enabled) ...<Widget>[
+                  const SizedBox(width: 10),
+                  _Waveform(active: active),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 录音时点亮的五根声波条。静态高度，不做循环动画 ——
+/// 无限动画会让测试里的 pumpAndSettle 永远等不到收敛。
+class _Waveform extends StatelessWidget {
+  const _Waveform({required this.active});
+
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    const List<double> heights = <double>[8, 15, 22, 13, 9];
+    return Row(
+      children: heights
+          .map(
+            (double height) => Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 1.5),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 160),
+                width: 3,
+                height: active ? height : height * 0.55,
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(active ? 0.95 : 0.45),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+          )
+          .toList(),
     );
   }
 }
@@ -738,7 +1159,7 @@ class _SendButton extends StatelessWidget {
       height: 48,
       decoration: BoxDecoration(
         gradient: enabled
-            ? const LinearGradient(
+            ? LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
                 colors: <Color>[Color(0xFF1B7168), AppColors.primaryDeep],
@@ -789,7 +1210,7 @@ class MessageBubble extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
         gradient: mine
-            ? const LinearGradient(
+            ? LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
                 colors: <Color>[Color(0xFF1D7169), AppColors.primaryDeep],
@@ -903,6 +1324,8 @@ class _SettingsDialogState extends State<_SettingsDialog> {
   @override
   void initState() {
     super.initState();
+    // 主题是全局色板，切完不会自动重建这个对话框，手动订阅一次。
+    PaletteController.instance.addListener(_onPaletteChanged);
     _provider = translationConfig.provider;
     // 自带凭证的包里绝不能把内置密钥明文回填到输入框（手机屏幕会直接显示）。
     const bool bundled = kHasBundledCredentials;
@@ -925,8 +1348,15 @@ class _SettingsDialogState extends State<_SettingsDialog> {
         TextEditingController(text: speechConfig.endpoint);
   }
 
+  void _onPaletteChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
   @override
   void dispose() {
+    PaletteController.instance.removeListener(_onPaletteChanged);
     _appIdController.dispose();
     _keyController.dispose();
     _regionController.dispose();
@@ -990,9 +1420,9 @@ class _SettingsDialogState extends State<_SettingsDialog> {
               padding: const EdgeInsets.fromLTRB(20, 18, 8, 14),
               child: Row(
                 children: <Widget>[
-                  const Icon(Icons.tune, size: 20, color: AppColors.primary),
+                   Icon(Icons.tune, size: 20, color: AppColors.primary),
                   const SizedBox(width: 10),
-                  const Expanded(
+                  Expanded(
                     child: Text(
                       '云端翻译设置',
                       style: TextStyle(
@@ -1026,9 +1456,9 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                           color: AppColors.primarySoft,
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: const Text(
+                        child: Text(
                           kBundledCredentialsNotice,
-                          key: ValueKey<String>('bundled-config-notice'),
+                          key: const ValueKey<String>('bundled-config-notice'),
                           style: TextStyle(
                             fontSize: 12.5,
                             height: 1.5,
@@ -1036,6 +1466,14 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                           ),
                         ),
                       ),
+                    const _SectionTitle(
+                      icon: Icons.palette_outlined,
+                      label: '主题配色',
+                      note: '立即生效，重启后保留',
+                    ),
+                    const SizedBox(height: 12),
+                    const _ThemePicker(),
+                    const SizedBox(height: 22),
                     const _SectionTitle(
                       icon: Icons.translate,
                       label: '文字翻译',
@@ -1173,8 +1611,8 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                       child: Text(
                         '当前：${_provider.label} · $shownEndpoint'
                         ' · 维语码 ${translationConfig.ugCode} · 语音诊断版'
-                        ' · 玻璃 ${Glass.spec.label}',
-                        style: const TextStyle(
+                        ' · 主题 ${AppColors.palette.name} · 玻璃 ${Glass.spec.label}',
+                        style: TextStyle(
                           fontSize: 11.5,
                           height: 1.6,
                           color: AppColors.inkMuted,
@@ -1215,6 +1653,119 @@ class _SettingsDialogState extends State<_SettingsDialog> {
   }
 }
 
+/// 主题选择器：四套配色的色点 + 名字，点一下立刻换。
+///
+/// 色点用的是该主题自己的主色与强调色，所以「选哪套」不用读文字也能看出来。
+class _ThemePicker extends StatelessWidget {
+  const _ThemePicker();
+
+  @override
+  Widget build(BuildContext context) {
+    final String currentId = AppColors.palette.id;
+    return Wrap(
+      spacing: 9,
+      runSpacing: 9,
+      children: BrandPalette.all
+          .map(
+            (BrandPalette palette) => _ThemeChip(
+              palette: palette,
+              selected: palette.id == currentId,
+            ),
+          )
+          .toList(),
+    );
+  }
+}
+
+class _ThemeChip extends StatelessWidget {
+  const _ThemeChip({required this.palette, required this.selected});
+
+  final BrandPalette palette;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: '主题 ${palette.name}（${palette.note}）',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => PaletteController.instance.select(palette),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.fromLTRB(9, 8, 12, 8),
+          decoration: BoxDecoration(
+            color: selected ? palette.primarySoft : Colors.white,
+            borderRadius: BorderRadius.circular(15),
+            border: Border.all(
+              color: selected ? palette.primary : AppColors.line,
+              width: selected ? 1.8 : 1,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: <Widget>[
+              SizedBox(
+                width: 28,
+                height: 20,
+                child: Stack(
+                  children: <Widget>[
+                    Positioned(left: 0, child: _dot(palette.primary)),
+                    Positioned(right: 0, child: _dot(palette.accent)),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 7),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: <Widget>[
+                  Text(
+                    palette.name,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      height: 1.2,
+                      fontWeight: FontWeight.w700,
+                      color: selected ? palette.primaryDeep : AppColors.ink,
+                    ),
+                  ),
+                  Text(
+                    palette.note,
+                    style: TextStyle(
+                      fontSize: 9.5,
+                      height: 1.3,
+                      color: AppColors.inkMuted,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _dot(Color color) => Container(
+        width: 18,
+        height: 18,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white, width: 1.5),
+          boxShadow: <BoxShadow>[
+            BoxShadow(
+              color: color.withOpacity(0.35),
+              blurRadius: 4,
+              offset: const Offset(0, 1),
+            ),
+          ],
+        ),
+      );
+}
+
 class _SectionTitle extends StatelessWidget {
   const _SectionTitle({
     required this.icon,
@@ -1234,7 +1785,7 @@ class _SectionTitle extends StatelessWidget {
         const SizedBox(width: 8),
         Text(
           label,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 14,
             fontWeight: FontWeight.w700,
             color: AppColors.ink,
@@ -1277,7 +1828,7 @@ class _ProviderField extends StatelessWidget {
           value: value,
           isExpanded: true,
           borderRadius: BorderRadius.circular(14),
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 14.5,
             color: AppColors.ink,
             fontWeight: FontWeight.w500,

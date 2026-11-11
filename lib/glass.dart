@@ -265,7 +265,7 @@ class AuroraBackground extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return DecoratedBox(
-      decoration: const BoxDecoration(color: AppColors.canvas),
+      decoration: BoxDecoration(color: AppColors.canvas),
       child: Stack(
         children: <Widget>[
           Positioned(

@@ -1,52 +1,254 @@
 import 'package:flutter/material.dart';
 
-/// 品牌色板：取色自艾德莱斯绸的松石绿与沙金，配暖白纸感底色。
+/// 一套完整配色。
 ///
-/// 为什么不直接用 `ColorScheme.fromSeed` 自动配色：自动方案会把
-/// 主色、容器色、强调色都洗成同一支灰调，界面看着"能用但没记住点"。
-/// 这里手动定几个关键色，只让 fromSeed 负责它擅长的部分（反色、错误色等）。
-class AppColors {
-  const AppColors._();
+/// 所有字段都是 const，切主题只是换一个实例，不会重建任何组件树。
+/// 「主色」永远是中文侧的颜色，「强调色」永远是维文侧的颜色 —— 这样换主题时
+/// 界面里「哪种语言配哪个颜色」的关系不会乱，只是配色换了皮。
+@immutable
+class BrandPalette {
+  const BrandPalette({
+    required this.id,
+    required this.name,
+    required this.note,
+    required this.primary,
+    required this.primaryLight,
+    required this.primaryDeep,
+    required this.primarySoft,
+    required this.accent,
+    required this.accentSoft,
+    required this.accentInk,
+    required this.coral,
+    required this.canvas,
+    required this.ink,
+    required this.inkMuted,
+    required this.line,
+  });
 
-  /// 主色：松石绿。标题栏、自己的气泡、主按钮。
-  static const Color primary = Color(0xFF17635C);
+  /// 持久化用的稳定标识，改名不影响已保存的选择。
+  final String id;
+
+  /// 设置页里显示的名字。
+  final String name;
+
+  /// 一句话说明这套配色的来源，方便自己记住为什么选它。
+  final String note;
+
+  /// 主色：中文侧、主按钮、标题栏。
+  final Color primary;
+
+  /// 主色浅阶：渐变上沿（依然要够深，白字才看得清）。
+  final Color primaryLight;
 
   /// 主色深阶：渐变下沿、深色文字。
-  static const Color primaryDeep = Color(0xFF0B3A36);
+  final Color primaryDeep;
 
-  /// 主色浅阶：选中态、浅底提示条。
-  static const Color primarySoft = Color(0xFFDCEBE7);
+  /// 主色浅底：选中态、浅底提示条。
+  final Color primarySoft;
 
-  /// 强调色：沙金。维文侧气泡、强调标记。
-  static const Color sand = Color(0xFFC89544);
+  /// 强调色：维文侧、次要操作。
+  final Color accent;
 
-  /// 沙金浅阶：标签底色。
-  static const Color sandSoft = Color(0xFFF6E9D2);
+  /// 强调色浅底：标签、提示卡。
+  final Color accentSoft;
 
-  /// 石榴红：录音中、错误提示。
-  static const Color coral = Color(0xFFC1543F);
+  /// 强调色上的文字色（浅底深字）。
+  final Color accentInk;
 
-  /// 页面底色：暖白，不刺眼。
-  static const Color canvas = Color(0xFFFBF8F3);
+  /// 警示色：录音中、错误。
+  final Color coral;
 
-  /// 卡片 / 气泡底色。
-  static const Color card = Color(0xFFFFFFFF);
+  /// 页面底色。
+  final Color canvas;
 
   /// 正文墨色。
-  static const Color ink = Color(0xFF16302C);
+  final Color ink;
 
   /// 次要文字。
-  static const Color inkMuted = Color(0xFF6B7F7A);
+  final Color inkMuted;
 
   /// 描边。
-  static const Color line = Color(0xFFE2E8E4);
+  final Color line;
 
-  /// 标题栏渐变。
-  static const LinearGradient headerGradient = LinearGradient(
-    begin: Alignment.topLeft,
-    end: Alignment.bottomRight,
-    colors: <Color>[Color(0xFF1B7168), primaryDeep],
+  /// 顶栏 / 自己的气泡用同一条渐变，保证同一套视觉语言。
+  LinearGradient get gradient => LinearGradient(
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+        colors: <Color>[primaryLight, primaryDeep],
+      );
+
+  /// 语言 → 颜色。中文侧主色，维文侧强调色。
+  Color colorOf(bool uyghur) => uyghur ? accent : primary;
+
+  /// 该语言对应的浅底色。
+  Color softOf(bool uyghur) => uyghur ? accentSoft : primarySoft;
+
+  /// 该语言的渐变：中文走主色梯度，维文走强调色梯度。
+  /// 强调色的深端用 [accentInk]，它本来就是为「压住白字」挑的深色。
+  LinearGradient gradientOf(bool uyghur) => uyghur
+      ? LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: <Color>[accent, accentInk],
+        )
+      : gradient;
+
+  /// 设置页主题选择器上的两个色点。
+  List<Color> get swatch => <Color>[primary, accent];
+
+  /// 艾德莱斯绸：松石绿 + 沙金。默认主题，取自维吾尔族传统织物。
+  static const BrandPalette adeles = BrandPalette(
+    id: 'adeles',
+    name: '艾德莱斯',
+    note: '松石绿 · 沙金',
+    primary: Color(0xFF17635C),
+    primaryLight: Color(0xFF1B7168),
+    primaryDeep: Color(0xFF0B3A36),
+    primarySoft: Color(0xFFDCEBE7),
+    accent: Color(0xFFC89544),
+    accentSoft: Color(0xFFF6E9D2),
+    accentInk: Color(0xFF7A5A22),
+    coral: Color(0xFFC1543F),
+    canvas: Color(0xFFFBF8F3),
+    ink: Color(0xFF16302C),
+    inkMuted: Color(0xFF6B7F7A),
+    line: Color(0xFFE2E8E4),
   );
+
+  /// 哔哩哔哩：官方粉 #FB7299 + 官方蓝 #00A1D6。
+  static const BrandPalette bilibili = BrandPalette(
+    id: 'bilibili',
+    name: 'B 站',
+    note: '哔哩哔哩粉 · 天依蓝',
+    primary: Color(0xFFFB7299),
+    primaryLight: Color(0xFFF0618C),
+    primaryDeep: Color(0xFF8A2547),
+    primarySoft: Color(0xFFFDE3EC),
+    accent: Color(0xFF00A1D6),
+    accentSoft: Color(0xFFDDF2FB),
+    accentInk: Color(0xFF08536D),
+    coral: Color(0xFFE5383B),
+    canvas: Color(0xFFFFF9FB),
+    ink: Color(0xFF2A2A35),
+    inkMuted: Color(0xFF71717E),
+    line: Color(0xFFF2E3E9),
+  );
+
+  /// 石榴：南疆石榴汁的红，配麦色金。
+  static const BrandPalette pomegranate = BrandPalette(
+    id: 'pomegranate',
+    name: '石榴',
+    note: '石榴红 · 麦金',
+    primary: Color(0xFFA62B3C),
+    primaryLight: Color(0xFFB93B4C),
+    primaryDeep: Color(0xFF63141F),
+    primarySoft: Color(0xFFF7E1E5),
+    accent: Color(0xFFD9A441),
+    accentSoft: Color(0xFFFBEFD8),
+    accentInk: Color(0xFF7A5426),
+    coral: Color(0xFFE4572E),
+    canvas: Color(0xFFFDF7F4),
+    ink: Color(0xFF331E1C),
+    inkMuted: Color(0xFF7A6460),
+    line: Color(0xFFEEDFD9),
+  );
+
+  /// 靛蓝：夜里的喀什蓝砖，配警示黄。
+  static const BrandPalette indigo = BrandPalette(
+    id: 'indigo',
+    name: '靛蓝',
+    note: '湖蓝 · 琥珀',
+    primary: Color(0xFF3D5AFE),
+    primaryLight: Color(0xFF4462D8),
+    primaryDeep: Color(0xFF1A237E),
+    primarySoft: Color(0xFFE3E8FF),
+    accent: Color(0xFFE8A33D),
+    accentSoft: Color(0xFFFDF0DA),
+    accentInk: Color(0xFF7A5800),
+    coral: Color(0xFFFF5252),
+    canvas: Color(0xFFF7F8FE),
+    ink: Color(0xFF1B2033),
+    inkMuted: Color(0xFF6B7285),
+    line: Color(0xFFE2E6F5),
+  );
+
+  /// 可选主题，顺序即设置页里的展示顺序。
+  static const List<BrandPalette> all = <BrandPalette>[
+    adeles,
+    bilibili,
+    pomegranate,
+    indigo,
+  ];
+
+  /// 按 id 找主题；找不到（旧版本存的值、文件被改坏）一律回默认。
+  static BrandPalette byId(String? id) => all.firstWhere(
+        (BrandPalette palette) => palette.id == id,
+        orElse: () => adeles,
+      );
+}
+
+/// 全局色板入口。
+///
+/// 这里刻意用「全局可变 + 静态 getter」而不是 InheritedWidget：
+/// 全工程有 80 多处取色，逐个传 context 只会让组件签名变脏。
+/// 一次只显示一套配色，切主题时先赋值再 notifyListeners，重建时读到的就是新值。
+///
+/// 代价：这些颜色不再是编译期常量，任何 `const Widget(... color: AppColors.x)`
+/// 都必须去掉 const。新增取色点时注意这一点。
+class AppColors {
+  AppColors._();
+
+  static BrandPalette _current = BrandPalette.adeles;
+
+  static BrandPalette get palette => _current;
+
+  static set palette(BrandPalette value) => _current = value;
+
+  static Color get primary => _current.primary;
+
+  static Color get primaryLight => _current.primaryLight;
+
+  static Color get primaryDeep => _current.primaryDeep;
+
+  static Color get primarySoft => _current.primarySoft;
+
+  static Color get accent => _current.accent;
+
+  /// 强调色的旧名字，历史代码里写作 sand（沙金）。
+  static Color get sand => _current.accent;
+
+  static Color get accentSoft => _current.accentSoft;
+
+  static Color get sandSoft => _current.accentSoft;
+
+  static Color get accentInk => _current.accentInk;
+
+  static Color get coral => _current.coral;
+
+  static Color get canvas => _current.canvas;
+
+  static Color get card => Colors.white;
+
+  static Color get ink => _current.ink;
+
+  static Color get inkMuted => _current.inkMuted;
+
+  static Color get line => _current.line;
+
+  /// 顶栏渐变。
+  static LinearGradient get headerGradient => _current.gradient;
+
+  /// 自己的气泡 / 主按钮渐变。
+  static LinearGradient get bubbleGradient => _current.gradient;
+
+  /// 语言色：中文侧主色、维文侧强调色。
+  static Color language(bool uyghur) => _current.colorOf(uyghur);
+
+  /// 语言浅底。
+  static Color languageSoft(bool uyghur) => _current.softOf(uyghur);
+
+  /// 语言渐变。
+  static LinearGradient gradientOf(bool uyghur) => _current.gradientOf(uyghur);
 }
 
 /// 全局主题。只做浅色主题：这是一个自用工具，深色模式只会增加
@@ -66,32 +268,34 @@ class AppTheme {
     'Geeza Pro',
   ];
 
+  /// 按 [AppColors.palette] 建主题。切主题时必须先改色板再调用本方法。
   static ThemeData light() {
+    final BrandPalette palette = AppColors.palette;
     final ColorScheme scheme = ColorScheme.fromSeed(
-      seedColor: AppColors.primary,
-      primary: AppColors.primary,
+      seedColor: palette.primary,
+      primary: palette.primary,
       onPrimary: Colors.white,
-      primaryContainer: AppColors.primarySoft,
-      onPrimaryContainer: AppColors.primaryDeep,
-      secondary: AppColors.sand,
+      primaryContainer: palette.primarySoft,
+      onPrimaryContainer: palette.primaryDeep,
+      secondary: palette.accent,
       onSecondary: Colors.white,
-      secondaryContainer: AppColors.sandSoft,
-      onSecondaryContainer: const Color(0xFF5E4013),
-      surface: AppColors.canvas,
-      onSurface: AppColors.ink,
-      error: AppColors.coral,
-      outlineVariant: AppColors.line,
+      secondaryContainer: palette.accentSoft,
+      onSecondaryContainer: palette.accentInk,
+      surface: palette.canvas,
+      onSurface: palette.ink,
+      error: palette.coral,
+      outlineVariant: palette.line,
     );
 
     final TextTheme base = Typography.material2021().black.apply(
-          bodyColor: AppColors.ink,
-          displayColor: AppColors.ink,
+          bodyColor: palette.ink,
+          displayColor: palette.ink,
         );
 
     return ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
-      scaffoldBackgroundColor: AppColors.canvas,
+      scaffoldBackgroundColor: palette.canvas,
       fontFamilyFallback: _fallback,
       textTheme: base.copyWith(
         // 标题：略收紧字距，中文小标题更整齐
@@ -99,19 +303,19 @@ class AppTheme {
           fontSize: 20,
           fontWeight: FontWeight.w700,
           letterSpacing: 0.2,
-          color: AppColors.ink,
+          color: palette.ink,
         ),
         titleMedium: base.titleMedium?.copyWith(
           fontSize: 16,
           fontWeight: FontWeight.w600,
-          color: AppColors.ink,
+          color: palette.ink,
         ),
         bodyLarge: base.bodyLarge?.copyWith(fontSize: 16, height: 1.45),
         bodyMedium: base.bodyMedium?.copyWith(fontSize: 14.5, height: 1.5),
         bodySmall: base.bodySmall?.copyWith(
           fontSize: 12.5,
           height: 1.45,
-          color: AppColors.inkMuted,
+          color: palette.inkMuted,
         ),
         labelLarge: base.labelLarge?.copyWith(
           fontSize: 15,
@@ -129,26 +333,26 @@ class AppTheme {
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: AppColors.card,
+        fillColor: Colors.white,
         isDense: true,
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        hintStyle: const TextStyle(color: AppColors.inkMuted, fontSize: 14.5),
-        labelStyle: const TextStyle(color: AppColors.inkMuted, fontSize: 14.5),
-        border: _inputBorder(AppColors.line, 1),
-        enabledBorder: _inputBorder(AppColors.line, 1),
-        focusedBorder: _inputBorder(AppColors.primary, 1.6),
-        errorBorder: _inputBorder(AppColors.coral, 1.2),
+        hintStyle: TextStyle(color: palette.inkMuted, fontSize: 14.5),
+        labelStyle: TextStyle(color: palette.inkMuted, fontSize: 14.5),
+        border: _inputBorder(palette.line, 1),
+        enabledBorder: _inputBorder(palette.line, 1),
+        focusedBorder: _inputBorder(palette.primary, 1.6),
+        errorBorder: _inputBorder(palette.coral, 1.2),
       ),
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
-          foregroundColor: AppColors.primary,
+          foregroundColor: palette.primary,
           textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         ),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
-          backgroundColor: AppColors.primary,
+          backgroundColor: palette.primary,
           foregroundColor: Colors.white,
           minimumSize: const Size(0, 48),
           padding: const EdgeInsets.symmetric(horizontal: 22),
@@ -158,39 +362,39 @@ class AppTheme {
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
-          backgroundColor: AppColors.card,
-          foregroundColor: AppColors.primary,
+          backgroundColor: Colors.white,
+          foregroundColor: palette.primary,
           elevation: 0,
           minimumSize: const Size(0, 48),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
         ),
       ),
       iconButtonTheme: IconButtonThemeData(
-        style: IconButton.styleFrom(foregroundColor: AppColors.primary),
+        style: IconButton.styleFrom(foregroundColor: palette.primary),
       ),
       dialogTheme: DialogTheme(
-        backgroundColor: AppColors.canvas,
+        backgroundColor: palette.canvas,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
         titleTextStyle: base.titleLarge?.copyWith(
           fontSize: 18,
           fontWeight: FontWeight.w700,
-          color: AppColors.ink,
+          color: palette.ink,
         ),
       ),
-      dividerTheme: const DividerThemeData(
-        color: AppColors.line,
+      dividerTheme: DividerThemeData(
+        color: palette.line,
         thickness: 1,
         space: 1,
       ),
-      snackBarTheme: const SnackBarThemeData(
+      snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
-        backgroundColor: AppColors.primaryDeep,
+        backgroundColor: palette.primaryDeep,
       ),
       tooltipTheme: TooltipThemeData(
         decoration: BoxDecoration(
-          color: AppColors.primaryDeep.withOpacity(0.94),
+          color: palette.primaryDeep.withOpacity(0.94),
           borderRadius: BorderRadius.circular(8),
         ),
         textStyle: const TextStyle(color: Colors.white, fontSize: 12.5),
@@ -206,10 +410,10 @@ class AppTheme {
       );
 
   /// 维吾尔文等比正文需要更松的行距，阿拉伯字母连写才不挤。
-  static const TextStyle uyghurBody = TextStyle(
-    fontSize: 19,
-    height: 1.95,
-    fontWeight: FontWeight.w500,
-    color: AppColors.ink,
-  );
+  static TextStyle get uyghurBody => TextStyle(
+        fontSize: 19,
+        height: 1.95,
+        fontWeight: FontWeight.w500,
+        color: AppColors.ink,
+      );
 }

@@ -10,22 +10,22 @@ class BrandMark extends StatelessWidget {
   const BrandMark({
     super.key,
     this.size = 36,
-    this.bubble = Colors.white,
-    this.accent = AppColors.sand,
-    this.ink = AppColors.primaryDeep,
+    this.bubble,
+    this.accent,
+    this.ink,
   });
 
   /// 标识整体边长（正方形）。
   final double size;
 
-  /// 上方气泡（中文侧）颜色。
-  final Color bubble;
+  /// 上方气泡（中文侧）颜色，默认白。
+  final Color? bubble;
 
-  /// 下方气泡（维文侧）颜色。
-  final Color accent;
+  /// 下方气泡（维文侧）颜色，默认跟随主题的强调色。
+  final Color? accent;
 
-  /// 气泡内文字条颜色。
-  final Color ink;
+  /// 气泡内文字条颜色，默认跟随主题的深主色。
+  final Color? ink;
 
   @override
   Widget build(BuildContext context) {
@@ -34,9 +34,9 @@ class BrandMark extends StatelessWidget {
       height: size,
       child: CustomPaint(
         painter: _BrandMarkPainter(
-          bubble: bubble,
-          accent: accent,
-          ink: ink,
+          bubble: bubble ?? Colors.white,
+          accent: accent ?? AppColors.accent,
+          ink: ink ?? AppColors.primaryDeep,
         ),
       ),
     );

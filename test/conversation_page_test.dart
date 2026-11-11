@@ -36,12 +36,11 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.textContaining('ئۇيغۇرچە → 中文'), findsOneWidget);
-    // TextButton.icon 的 runtimeType 是私有的 _TextButtonWithIcon，
-    // find.byType(TextButton) 精确匹配会查不到，这里改用类型谓词。
-    final Finder voiceButton = find.byWidgetPredicate(
-      (Widget widget) => widget is TextButton,
+    // 语音入口改为「按住说话」，用固定 Key 定位；未配置凭证时应显示待接入文案。
+    expect(
+      find.byKey(const ValueKey<String>('voice-button')),
+      findsOneWidget,
     );
-    expect(voiceButton, findsOneWidget);
-    expect(tester.widget<TextButton>(voiceButton).onPressed, isNull);
+    expect(find.text('按住说话 · 待接入'), findsOneWidget);
   });
 }
