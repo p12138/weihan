@@ -196,7 +196,7 @@ class _CountingTranslator implements Translator {
     Language to,
   ) async {
     calls += 1;
-    return Translation(
+    return const Translation(
       text: 'ياخشىمۇسىز',
       provider: '取消测试',
       found: true,
