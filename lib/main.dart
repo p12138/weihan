@@ -5,23 +5,38 @@ import 'package:flutter/material.dart';
 import 'conversation_page.dart';
 import 'device_audio.dart';
 import 'palette_controller.dart';
+import 'splash_page.dart';
 import 'theme.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   // 读上次选的主题；读不到就用默认的艾德莱斯配色。
   PaletteController.instance.load();
-  runApp(const BaseApp());
-  // 首帧之后再弹麦克风授权框：既不盖在原生启动页上，也不会在用户
-  // 第一次按住说话时弹出来把那次录音抢废。
-  WidgetsBinding.instance.addPostFrameCallback((_) {
-    unawaited(primeMicrophonePermission());
-  });
+  runApp(BaseApp(
+    showSplash: true,
+    // 启动页读完再弹麦克风授权框：系统弹窗不会盖住要看的品牌文字。
+    // 权限依然是「提前问」，只是提前到用户准备开始说话之前，不是按住那一刻。
+    onSplashFinished: () => unawaited(primeMicrophonePermission()),
+  ));
 }
 
 /// 应用外壳。保留 BaseApp 名称，便于既有测试与文档引用。
 class BaseApp extends StatelessWidget {
-  const BaseApp({super.key});
+  const BaseApp({
+    super.key,
+    this.showSplash = false,
+    this.splashHold = kSplashHold,
+    this.onSplashFinished,
+  });
+
+  /// 只有真正的 main() 会打开。widget 测试 pump `const BaseApp()` 时直接进
+  /// 对话页：既不必等两秒多，也不会让「融合」「标语」在首屏命中两份。
+  final bool showSplash;
+
+  /// 启动页停留时长，抽成参数方便测试里缩短。
+  final Duration splashHold;
+
+  final VoidCallback? onSplashFinished;
 
   @override
   Widget build(BuildContext context) {
@@ -44,7 +59,13 @@ class BaseApp extends StatelessWidget {
               child: inner ?? const SizedBox.shrink(),
             );
           },
-          home: ConversationPage(),
+          home: showSplash
+              ? SplashGate(
+                  hold: splashHold,
+                  onFinished: onSplashFinished,
+                  child: ConversationPage(),
+                )
+              : ConversationPage(),
         );
       },
     );

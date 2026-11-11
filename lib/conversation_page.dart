@@ -16,6 +16,9 @@ import 'speech_pipeline.dart';
 import 'theme.dart';
 import 'translation_config.dart';
 
+/// 向上滑过这么多逻辑像素就进「松开取消」区。公开常量，测试不用写魔法数。
+const double kCancelDragDistance = 96;
+
 /// 对话页：文字互译、语音互译、方向切换、双语气泡（维文自动 RTL）。
 class ConversationPage extends StatefulWidget {
   ConversationPage({
@@ -48,6 +51,14 @@ class _ConversationPageState extends State<ConversationPage> {
 
   /// 正在申请权限 / 启动录音，避免连点重复起流。
   bool _starting = false;
+
+  /// 手指是否已上滑进「取消区」。只影响视觉；是否真的取消由松手那一刻决定，
+  /// 滑回来还能继续说话。由语音按钮在指针移动时上报。
+  bool _cancelArmed = false;
+
+  /// 本次按住是否已判成取消。录音启动是异步的，取消可能发生在启动完成之前，
+  /// 这个标记要一直留到 _beginVoice 收尾，才能给出「已取消」而不是静默。
+  bool _voiceCancelled = false;
 
   /// 录音时的实时音量（0..1），驱动浮层里的音量条。
   double _level = 0;
@@ -142,6 +153,8 @@ class _ConversationPageState extends State<ConversationPage> {
       return;
     }
     _holding = true;
+    _voiceCancelled = false;
+    _cancelArmed = false;
     if (!widget.speech.isAvailable) {
       _holding = false;
       setState(() => _notice = '语音未接入 · 到设置页填讯飞 APPID / APIKey / APISecret');
@@ -166,8 +179,12 @@ class _ConversationPageState extends State<ConversationPage> {
         return;
       }
       if (!_holding) {
-        // 松手比启动还快：这段录音作废
+        // 松手比启动还快：这段录音作废。若作废的原因是上滑取消，也要
+        // 给一句明确回执，别让用户以为 App 没反应。
         await _stopSilently();
+        if (_voiceCancelled && mounted) {
+          setState(() => _notice = '录音已取消 · 没有发送');
+        }
         return;
       }
       setState(() {
@@ -186,14 +203,54 @@ class _ConversationPageState extends State<ConversationPage> {
     }
   }
 
-  /// 松手：结束录音并跑「识别 → 翻译 → 朗读」三环。
-  Future<void> _endVoice() async {
-    _holding = false;
-    if (!_recording) {
-      // 还在启动阶段，交给 _beginVoice 里的 _holding 判断
+  /// 语音按钮上报「手指滑进 / 滑出取消区」。只换浮层与提示，不动录音本身 ——
+  /// 微信就是这个手感：滑上去还能滑回来接着说。
+  void _setCancelArmed(bool armed) {
+    if (_cancelArmed == armed || !mounted) {
       return;
     }
-    await _finishVoice();
+    setState(() {
+      _cancelArmed = armed;
+      if (_recording) {
+        // 和浮层文案刻意错开：顶栏提示条与浮层会同时上屏，写成同一句
+        // 会让界面看着重复，也会让按文本定位的测试命中两份。
+        _notice = armed ? '已进取消区 · 松手即丢弃' : '正在说话 · 松手结束';
+      }
+    });
+  }
+
+  /// 松手：[cancel] 为真就丢掉录音，否则跑「识别 → 翻译 → 朗读」三环。
+  Future<void> _endVoice({required bool cancel}) async {
+    _holding = false;
+    _voiceCancelled = cancel;
+    if (_cancelArmed) {
+      setState(() => _cancelArmed = false);
+    }
+    if (!_recording) {
+      // 还在启动阶段，交给 _beginVoice 里的 _holding / _voiceCancelled 判断
+      return;
+    }
+    if (cancel) {
+      await _cancelVoice();
+    } else {
+      await _finishVoice();
+    }
+  }
+
+  /// 取消：停掉录音并丢弃 PCM，绝不调用识别 / 翻译 / 朗读。
+  ///
+  /// 说错了重说一遍不该产生一条错误消息，也不该白跑一次云端计费。
+  Future<void> _cancelVoice() async {
+    _stopLevels();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _recording = false;
+      _busy = false;
+      _notice = '录音已取消 · 没有发送';
+    });
+    await _stopSilently();
   }
 
   /// 丢弃一段录音：结束不抛错，失败也只是日志。
@@ -417,17 +474,19 @@ class _ConversationPageState extends State<ConversationPage> {
                             ),
                     ),
                     // 录音浮层：IgnorePointer 保证抬手事件仍然回到语音按钮，
-                    // 不会因为浮层盖上来而丢一次松手。
+                    // 不会因为浮层盖上来而丢一次松手；放在中间偏下，正好是
+                    // 手指上滑进「取消区」时视线会停住的位置。
                     if (_recording)
                       Positioned.fill(
                         child: IgnorePointer(
                           child: Align(
-                            alignment: Alignment.bottomCenter,
+                            alignment: const Alignment(0, 0.32),
                             child: Padding(
-                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
-                              child: _RecordingPanel(
+                              padding: const EdgeInsets.fromLTRB(18, 0, 18, 12),
+                              child: _VoiceOverlay(
                                 level: _level,
                                 elapsed: _recordWatch.elapsed,
+                                cancelling: _cancelArmed,
                               ),
                             ),
                           ),
@@ -442,10 +501,12 @@ class _ConversationPageState extends State<ConversationPage> {
                 direction: direction,
                 speechReady: speechReady,
                 recording: _recording,
+                cancelling: _cancelArmed,
                 busy: _busy,
                 onSend: _busy || _recording ? null : _submit,
                 onVoiceStart: _beginVoice,
                 onVoiceEnd: _endVoice,
+                onVoiceCancelChanged: _setCancelArmed,
               ),
             ],
           ),
@@ -467,6 +528,9 @@ class _ConversationPageState extends State<ConversationPage> {
 }
 
 typedef SpeakCallback = void Function(String text, Language language);
+
+/// 松手回调带上「是否取消」：取消时只丢录音，不跑云端三环。
+typedef VoiceEndCallback = void Function({required bool cancel});
 
 /// 顶栏：品牌标识 + 标语 + 操作。
 ///
@@ -952,20 +1016,24 @@ class _Composer extends StatelessWidget {
     required this.direction,
     required this.speechReady,
     required this.recording,
+    required this.cancelling,
     required this.busy,
     required this.onSend,
     required this.onVoiceStart,
     required this.onVoiceEnd,
+    required this.onVoiceCancelChanged,
   });
 
   final TextEditingController controller;
   final TranslationDirection direction;
   final bool speechReady;
   final bool recording;
+  final bool cancelling;
   final bool busy;
   final VoidCallback? onSend;
   final VoidCallback onVoiceStart;
-  final VoidCallback onVoiceEnd;
+  final VoiceEndCallback onVoiceEnd;
+  final ValueChanged<bool> onVoiceCancelChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -1032,9 +1100,11 @@ class _Composer extends StatelessWidget {
                 child: _VoiceButton(
                   ready: speechReady,
                   recording: recording,
+                  cancelling: cancelling,
                   busy: busy,
                   onStart: onVoiceStart,
                   onEnd: onVoiceEnd,
+                  onCancelChanged: onVoiceCancelChanged,
                 ),
               ),
             ],
@@ -1053,20 +1123,28 @@ class _Composer extends StatelessWidget {
 ///
 /// 手指滑出按钮范围再松开也能收到 up —— 指针事件会继续投递给按下时的命中路径，
 /// 不会出现「录着录着一松手停不下来」。
+///
+/// 取消手势也是靠这条特性：向上滑过 [kCancelDragDistance] 逻辑像素就进
+/// 「松开取消」态（浮层变红 + 轻震动），滑回来能接着说，此时松手才真的丢弃
+/// 录音。位移由 Listener 的原始 move 事件算，不进手势竞技场，不会被页面滚动抢走。
 class _VoiceButton extends StatefulWidget {
   const _VoiceButton({
     required this.ready,
     required this.recording,
+    required this.cancelling,
     required this.busy,
     required this.onStart,
     required this.onEnd,
+    required this.onCancelChanged,
   });
 
   final bool ready;
   final bool recording;
+  final bool cancelling;
   final bool busy;
   final VoidCallback onStart;
-  final VoidCallback onEnd;
+  final VoiceEndCallback onEnd;
+  final ValueChanged<bool> onCancelChanged;
 
   @override
   State<_VoiceButton> createState() => _VoiceButtonState();
@@ -1076,11 +1154,20 @@ class _VoiceButtonState extends State<_VoiceButton> {
   /// 手指是否按在按钮上：只影响视觉反馈，录音状态由父层管。
   bool _down = false;
 
+  /// 按下时的纵坐标，用来算「上滑了多远」。
+  double _downDy = 0;
+
+  /// 当前是否在取消区。本地留一份，松手那一刻不用等父层回传。
+  bool _cancelArmed = false;
+
   bool get _enabled => widget.ready && !widget.busy;
 
   String get _label {
     if (!widget.ready) {
       return '按住说话 · 待接入';
+    }
+    if (_cancelArmed) {
+      return '松开手指 · 取消发送';
     }
     if (widget.recording) {
       return '松手结束 · 正在录音';
@@ -1095,39 +1182,81 @@ class _VoiceButtonState extends State<_VoiceButton> {
     if (!widget.ready) {
       return Icons.mic_off_outlined;
     }
+    if (_cancelArmed) {
+      return Icons.undo;
+    }
     if (widget.recording) {
       return Icons.graphic_eq;
     }
     return widget.busy ? Icons.cloud_sync_outlined : Icons.mic;
   }
 
-  void _press() {
+  void _press(PointerDownEvent event) {
+    _downDy = event.position.dy;
+    _cancelArmed = false;
     setState(() => _down = true);
+    widget.onCancelChanged(false);
     widget.onStart();
   }
 
-  void _release() {
-    if (_down) {
-      setState(() => _down = false);
+  /// 上滑进 / 滑出取消区。只看竖直向上的位移，横着挪不算。
+  void _updateCancel(double dy) {
+    if (!_down) {
+      return;
     }
-    widget.onEnd();
+    final bool armed = (_downDy - dy) >= kCancelDragDistance;
+    if (armed == _cancelArmed) {
+      return;
+    }
+    setState(() => _cancelArmed = armed);
+    widget.onCancelChanged(armed);
+    // 进 / 出取消区给一次轻震动，不用盯屏幕也知道状态变了；平台不支持
+    // 触感时静默忽略，绝不让反馈影响录音。
+    unawaited(_buzz());
+  }
+
+  static Future<void> _buzz() async {
+    try {
+      await HapticFeedback.lightImpact();
+    } on Object catch (_) {
+      // 模拟器 / 无触感机型上 MissingPluginException 属于正常情况。
+    }
+  }
+
+  void _release() {
+    final bool cancel = _cancelArmed;
+    if (_down || _cancelArmed) {
+      setState(() {
+        _down = false;
+        _cancelArmed = false;
+      });
+    }
+    if (cancel) {
+      widget.onCancelChanged(false);
+    }
+    widget.onEnd(cancel: cancel);
   }
 
   @override
   Widget build(BuildContext context) {
     final bool active = widget.recording;
     final bool pressed = active || _down;
+    final bool cancelling = _cancelArmed || widget.cancelling;
 
-    // 录音中换成警示色渐变，和空闲时的品牌渐变拉开距离
+    // 录音中换成警示色渐变，进取消区再压深一档，和空闲时的品牌渐变拉开距离
     final LinearGradient? gradient = !_enabled
         ? null
-        : pressed
+        : pressed || cancelling
             ? LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
                 colors: <Color>[
                   AppColors.coral,
-                  Color.lerp(AppColors.coral, Colors.black, 0.24) ??
+                  Color.lerp(
+                        AppColors.coral,
+                        Colors.black,
+                        cancelling ? 0.42 : 0.24,
+                      ) ??
                       AppColors.coral,
                 ],
               )
@@ -1137,12 +1266,19 @@ class _VoiceButtonState extends State<_VoiceButton> {
       button: true,
       enabled: _enabled,
       label: _label,
-      hint: '按住不动说话，松开手指结束',
+      hint: '按住不动说话，松开手指结束；手指向上滑可以取消',
       child: Listener(
         key: const ValueKey<String>('voice-button'),
         behavior: HitTestBehavior.opaque,
-        onPointerDown: (_) => _press(),
-        onPointerUp: (_) => _release(),
+        onPointerDown: _press,
+        onPointerMove: (PointerMoveEvent event) =>
+            _updateCancel(event.position.dy),
+        onPointerUp: (PointerUpEvent event) {
+          // 有些机型（以及测试手势）只在 up 时给出最终位置，这里兜一次判定，
+          // 免得「一按就滑到屏幕顶再松手」被当成正常发送。
+          _updateCancel(event.position.dy);
+          _release();
+        },
         onPointerCancel: (_) => _release(),
         child: AnimatedScale(
           scale: pressed ? 0.975 : 1,
@@ -1245,7 +1381,84 @@ class _Waveform extends StatelessWidget {
   }
 }
 
-/// 录音时浮在会话区底部的「微信式」音量卡片。
+/// 录音浮层 = 取消引导胶囊 + 音量卡片。
+///
+/// 引导胶囊常驻，用户第一次按住就知道「说错了可以上滑取消」；滑进取消区后
+/// 它和卡片一起变红，不用低头找按钮。父层已用 IgnorePointer 包住整块，
+/// 所以手指在屏幕上怎么划，事件都还是回到语音按钮的 Listener。
+class _VoiceOverlay extends StatelessWidget {
+  const _VoiceOverlay({
+    required this.level,
+    required this.elapsed,
+    required this.cancelling,
+  });
+
+  final double level;
+  final Duration elapsed;
+  final bool cancelling;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        _CancelBadge(armed: cancelling),
+        const SizedBox(height: 12),
+        _RecordingPanel(
+          level: level,
+          elapsed: elapsed,
+          cancelling: cancelling,
+        ),
+      ],
+    );
+  }
+}
+
+/// 一枚胶囊两种状态，用 AnimatedContainer 补色，不做循环动画。
+class _CancelBadge extends StatelessWidget {
+  const _CancelBadge({required this.armed});
+
+  final bool armed;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 160),
+      curve: Curves.easeOut,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+      decoration: BoxDecoration(
+        color: armed ? AppColors.coral : Colors.black.withOpacity(0.4),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: armed
+              ? Colors.white.withOpacity(0.5)
+              : Colors.white.withOpacity(0.24),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(
+            armed ? Icons.undo : Icons.arrow_upward,
+            size: 15,
+            color: Colors.white,
+          ),
+          const SizedBox(width: 7),
+          Text(
+            armed ? '松开手指，取消发送' : '手指上滑，取消发送',
+            style: const TextStyle(
+              fontSize: 12.5,
+              fontWeight: FontWeight.w700,
+              color: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 录音时浮在会话区中下部的「微信式」音量卡片。
 ///
 /// 条高直接吃真实麦克风音量（[level] 0..1），不是随机数：一旦没有输入就
 /// 贴地平躺，用户能一眼判断「到底有没有在收我的声音」。
@@ -1253,13 +1466,20 @@ class _Waveform extends StatelessWidget {
 /// 用 AnimatedContainer 做一次性补间，不挂 Timer、不用 repeat ——
 /// 否则 widget 测试里的 pumpAndSettle 会永远等不到收敛。
 class _RecordingPanel extends StatelessWidget {
-  const _RecordingPanel({required this.level, required this.elapsed});
+  const _RecordingPanel({
+    required this.level,
+    required this.elapsed,
+    required this.cancelling,
+  });
 
   /// 当前音量，0（安静）～ 1（满幅）。
   final double level;
 
   /// 已录时长。
   final Duration elapsed;
+
+  /// 是否已滑进取消区：整张卡片换成警示红，文案也改口。
+  final bool cancelling;
 
   String get _clock {
     final int total = elapsed.inSeconds;
@@ -1270,6 +1490,7 @@ class _RecordingPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final Color base = cancelling ? AppColors.coral : AppColors.primaryDeep;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
@@ -1277,15 +1498,14 @@ class _RecordingPanel extends StatelessWidget {
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: <Color>[
-            AppColors.primaryDeep.withOpacity(0.94),
-            Color.lerp(AppColors.primaryDeep, Colors.black, 0.3) ??
-                AppColors.primaryDeep,
+            base.withOpacity(0.94),
+            Color.lerp(base, Colors.black, 0.3) ?? base,
           ],
         ),
         borderRadius: BorderRadius.circular(22),
         boxShadow: <BoxShadow>[
           BoxShadow(
-            color: AppColors.primaryDeep.withOpacity(0.32),
+            color: base.withOpacity(0.32),
             blurRadius: 22,
             offset: const Offset(0, 8),
           ),
@@ -1306,7 +1526,11 @@ class _RecordingPanel extends StatelessWidget {
                 shape: BoxShape.circle,
                 border: Border.all(color: Colors.white.withOpacity(0.22)),
               ),
-              child: const Icon(Icons.mic, size: 22, color: Colors.white),
+              child: Icon(
+                cancelling ? Icons.undo : Icons.mic,
+                size: 22,
+                color: Colors.white,
+              ),
             ),
           ),
           const SizedBox(width: 12),
@@ -1320,7 +1544,7 @@ class _RecordingPanel extends StatelessWidget {
                 Row(
                   children: <Widget>[
                     Text(
-                      '松手结束',
+                      cancelling ? '松开即取消' : '松手结束',
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
@@ -1333,6 +1557,19 @@ class _RecordingPanel extends StatelessWidget {
                       style: TextStyle(
                         fontSize: 12,
                         color: Colors.white.withOpacity(0.62),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        cancelling ? '滑回下方继续说话' : '手指上滑可取消',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.end,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: Colors.white.withOpacity(0.7),
+                        ),
                       ),
                     ),
                   ],

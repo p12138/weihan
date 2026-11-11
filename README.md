@@ -62,7 +62,8 @@
 | `lib/speech_config.dart` | 讯飞语音凭证、维语/中文发音人 vcn、代理地址（内存，不落盘） |
 | `lib/xfyun_speech.dart` | HMAC-SHA256 签名 + wss 多语种 ASR / TTS 协议实现，传输层可注入；ASR 按 40ms/帧实时率发帧 |
 | `lib/default_speech.dart` | `ConfigurableSpeechPort`：设置页保存凭证后立即生效，无需重新出包 |
-| `lib/device_audio.dart` | 录音（16k/16bit/单声道 PCM 流）、从 PCM 直接算实时音量、录音诊断、播放（mp3，含音频会话配置）、启动期预申请麦克风权限 |
+| `lib/device_audio.dart` | 录音（16k/16bit/单声道 PCM 流）、从 PCM 直接算实时音量、录音诊断、播放（mp3，含音频会话配置）、启动页结束后预申请麦克风权限 |
+| `lib/splash_page.dart` | 应用内品牌启动页：矢量重绘成图文字、`kSplashHold` 停留时长、到点淡出到对话页 |
 | `lib/speech_pipeline.dart` | 三环编排：ASR → MT → TTS；合成失败降级为 `speakError`，不丢文字 |
 | `lib/conversation_page.dart` | 对话 UI（维文 RTL、方向切换、语音按钮、译文朗读、云端设置） |
 | `lib/theme.dart` | 四套主题配色 `BrandPalette` + 全局色板 `AppColors` + 组件默认样式、维文行距 |
@@ -80,6 +81,8 @@
 | `test/smoke_test.dart` | 首页渲染冒烟测试 |
 | `test/conversation_test.dart` | 领域模型 / 降级链 / 演示词库单测 |
 | `test/conversation_page_test.dart` | widget 交互测试，把「中文→维文」等真机验证过的行为固化成断言 |
+| `test/voice_cancel_test.dart` | 上滑取消回归：取消不跑云端三环、滑回来照常翻译、横滑不误触 |
+| `test/splash_page_test.dart` | 启动页停留时长与「到点才进对话页」回归 |
 | `test/niutrans_translator_test.dart` | 16 个单测：小牛签名、请求体、语种码、重试、降级（假网关） |
 | `test/azure_translator_test.dart` | 9 个单测：Azure 请求头、语言映射、区域、降级（假网关） |
 | `test/settings_test.dart` | 2 个 widget 测试：填入 / 清空凭证后模式条切换 |
@@ -460,8 +463,14 @@ E2E UI 回归通过：录音启停 / 双气泡 / 自动朗读 / 朗读按钮
   `windowSplashScreenBackground`/`AnimatedIcon`；iOS `LaunchScreen.storyboard`
   改成四边贴边 + `scaleAspectFill`，底色 `#062538`。为控制体积，Android 启动图
   只留一份 `drawable-xxhdpi`，由系统按屏幕密度缩放。
-  **没有 Flutter 层的假启动页** —— 那种要卡一个定时器，只会让冷启动更慢，
-  还会把 widget 测试全打乱。
+- **启动页停留（0.4.4）**：原生启动图只在冷启动那一瞬顶着白屏，Flutter 画出
+  第一帧系统就把它撤掉，真机反馈「融合」和两行标语一闪就没了。所以
+  `lib/splash_page.dart` 在 Flutter 侧接上同一套视觉 —— 深青渐变、交织环标识、
+  名称 / 拼音 / 标语 / 英文副题 / 底部落款全部**用矢量与文字重画**，不把 1.4MB
+  成图塞进包，文字还能按密度保持锐利 —— 再停满 `kSplashHold`（2.6 秒）后
+  450ms 淡出到对话页。麦克风授权框也延后到启动页结束再弹，不盖住要读的字。
+  `BaseApp.showSplash` 只有真正的 `main()` 打开：widget 测试 pump `const BaseApp()`
+  仍直接进对话页，既不用等两秒多，也不会让「融合」在首屏命中两份。
 - **改设计**：换掉 `brand/` 里的母版后跑 `python3 scripts/generate_brand_assets.py`，
   再用 `--check` 校验 39 个资源齐全、尺寸正确、且没有旧密度的启动图残留；
   CI 每轮自动跑 `--check`，资源丢了会直接判红。
@@ -473,15 +482,22 @@ E2E UI 回归通过：录音启停 / 双气泡 / 自动朗读 / 朗读按钮
   「我在说」的那一侧是实心渐变 + 投影，另一侧是同色系浅底细边。点任一胶囊即可
   把它设为「我说的话」，中间圆形交换键点一下也能翻转。**颜色是语言的一部分**，
   换主题时两个色一起换，但「哪个颜色对应哪种语言」不变 —— 不看字也认得出方向。
-- **按住说话**：语音按钮是「按下就开始录、松手就结束」，不是点一下开始、再点一下
-  结束。`Listener` 直接收原始指针事件（`onPointerDown/Up/Cancel`），不等手势竞技场
-  判胜负，所以按下那一瞬间就开始录音；手指滑出按钮再松开也能正常收尾，来电之类的
-  系统打断会走 `onPointerCancel`。按下时按钮缩到 0.975 并换警示色；录到的音频为空时
-  明确提示「没录到声音」，不把空音频丢给云端。
-  **麦克风权限在 App 首帧之后就问下来**（`primeMicrophonePermission`）：`record` 的
+- **按住说话 + 上滑取消（微信式，0.4.4）**：语音按钮是「按下就开始录、松手就结束」，
+  不是点一下开始、再点一下结束。`Listener` 直接收原始指针事件
+  （`onPointerDown/Move/Up/Cancel`），不等手势竞技场判胜负，所以按下那一瞬间
+  就开始录音；手指滑出按钮再松开也能正常收尾，来电之类的系统打断会走
+  `onPointerCancel`。说错了不用找取消按钮：**向上滑过 `kCancelDragDistance`（96dp）**
+  就进取消区，引导胶囊与音量卡片一起变红、按钮改口「松开手指 · 取消发送」、
+  给一次轻震动；此时松手只停录音并丢掉 PCM，识别 / 翻译 / 朗读一次都不调用，
+  提示「录音已取消 · 没有发送」。**滑回下方还能接着说**，横着挪手指不会误触。
+  阈值由原始 move 事件按竖直位移算，不进手势竞技场，也不会被页面滚动抢走；
+  `onPointerUp` 会按最终位置再兜一次判定，避免「一按就滑到屏顶再松手」被当正常发送。
+  按下时按钮缩到 0.975 并换警示色；录到的音频为空时明确提示「没录到声音」。
+  **麦克风权限在启动页结束后就问下来**（`primeMicrophonePermission`）：`record` 的
   `hasPermission()` 会弹系统框并等用户点，若拖到按住那一刻才问，用户得松手去点，
   松手事件先到、权限回来那段录音又被当成「按太快」丢掉 —— 第一次按住会毫无反应。
-- **录音音量可视化（微信式）**：录音时浮层从会话区底部浮出，13 根竖条的高度吃的是
+- **录音音量可视化（微信式）**：录音时浮层从会话区中下部浮出（上方常驻一枚
+  「手指上滑，取消发送」引导胶囊，进取消区后变红），13 根竖条的高度吃的是
   **真实录到的 PCM**（对每个音频块求 RMS → dBFS → 0..1，用 √ 压低端），旁边跟着计时。
   不再订阅 `record` 的 `onAmplitudeChanged`：那条平台振幅流在 `startStream` 模式下
   时有时无，波形不动会让人误判成「识别不到声音」；而 PCM 块就在手里，波形动不动
@@ -502,6 +518,8 @@ E2E UI 回归通过：录音启停 / 双气泡 / 自动朗读 / 朗读按钮
   系统字号放大最多按 1.3 倍收口，避免气泡与输入区挤成一团。
 - **无动画依赖**：全页没有无限循环动画（脉冲、loading 圈），`pumpAndSettle`
   才不会被挂死 —— 这是 E2E 能稳定跑的前提，改 UI 时不要引入 `repeat()`。
+  启动页用的是一次性 `Timer` + `AnimatedSwitcher` / `AnimatedContainer` 补间，
+  到点即收敛；启动页停留开关只由 `main()` 打开，widget 测试不受影响。
 
 ### 主题配色系统
 
