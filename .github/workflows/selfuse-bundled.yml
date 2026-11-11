@@ -36,6 +36,10 @@ concurrency:
   group: selfuse-bundled-${{ github.ref }}
   cancel-in-progress: true
 
+# 发布到 Releases 需要写权限；其余只读足够。
+permissions:
+  contents: write
+
 jobs:
   guard:
     name: 凭证与可见性检查
@@ -208,6 +212,30 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
+      # Actions 的 Artifacts 一定是 zip（平台强制），想直接下 .apk 只能走 Releases。
+      # 用一个滚动 tag（selfuse-latest）+ 固定文件名覆盖，保证 Releases 页永远只有最新包，
+      # 同时给出稳定直链，装包时点一下就下载，不用解压：
+      #   https://github.com/<owner>/<repo>/releases/download/selfuse-latest/weihan-selfuse-debug.apk
+      - name: 发布到 Releases（免解压直链）
+        if: ${{ needs.guard.outputs.upload == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: selfuse-latest
+        run: |
+          set -euo pipefail
+          apk="$(ls build/app/outputs/flutter-apk/*.apk | head -n1)"
+          cp "$apk" weihan-selfuse-debug.apk
+          note="自带凭证的自用语音翻译包：装到手机即可使用，设置页无需填写任何内容。
+          来自 commit ${GITHUB_SHA:0:7}，run #${GITHUB_RUN_NUMBER}。
+          ⚠️ 凭证可被反编译提取，请勿分发本包。"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "自用语音翻译包（最新）" --notes "$note"
+          else
+            gh release create "$TAG" --title "自用语音翻译包（最新）" --notes "$note"
+          fi
+          gh release upload "$TAG" weihan-selfuse-debug.apk --clobber
+          echo "::notice::APK 已发布到 Releases，直链 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${TAG}/weihan-selfuse-debug.apk"
+
       - name: 公开仓库未上传产物
         if: ${{ needs.guard.outputs.upload != 'true' }}
         run: |
@@ -300,7 +328,12 @@ jobs:
         run: |
           echo "### 自带凭证自用包" >> "$GITHUB_STEP_SUMMARY"
           echo "凭证由 Secrets 在编译期注入，装包后无需在设置页填任何内容。" >> "$GITHUB_STEP_SUMMARY"
-          echo "产物仅在允许上传时出现在 Artifacts，保留 3 天。" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ needs.guard.outputs.upload }}" = "true" ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "**直接下载 APK（无需解压）**：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/selfuse-latest/weihan-selfuse-debug.apk" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "也可从 [Releases 页面](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases) 下载；Artifacts 里的同名产物是 zip 备份，保留 3 天。" >> "$GITHUB_STEP_SUMMARY"
+          fi
           echo "**注意**：凭证在安装包二进制中可被反编译提取，请勿分发此包。" >> "$GITHUB_STEP_SUMMARY"
           if [ "${{ needs.guard.outputs.upload }}" != "true" ]; then
             echo "> 本轮仓库为 public，产物未上传；转 private 后重跑即可自动出包。" >> "$GITHUB_STEP_SUMMARY"

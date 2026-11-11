@@ -447,21 +447,24 @@ CI 会先跑 `test/bundled_config_test.dart`（带同一份 define 文件）确�
 | 产物 | 出自 | 含凭证 | 用途 |
 |---|---|---|---|
 | `verify-debug-apk-*` | `verify-first-build` | 否 | 干净门禁包，装了要在设置页填一次；可安全给人 |
-| `weihan-selfuse-bundled-apk-*` | `selfuse-bundled-build` | **是** | 本人自用，开箱即用，**不要分发** |
+| `weihan-selfuse-debug.apk`（Releases） | `selfuse-bundled-build` | **是** | 本人自用，开箱即用，**不要分发** |
+| `weihan-selfuse-bundled-apk-*`（Artifacts，zip） | 同上 | **是** | 同一份包的 zip 备份，保留 3 天 |
 | `weihan-selfuse-bundled-simulator.ipa` | 同上（手动勾选 with_ios） | **是** | iOS 模拟器自用，未签名 |
 
-### 触发方式与唯一需要你做的一次操作
+### 触发方式与下载
 
 - `lib/` / `pubspec` / 原生壳 / `scripts/` / 本工作流变更并 push 到 main 时**自动跑**；
   也可在 Actions 页手动 `Run workflow`。想顺带出 iOS 包，勾 `with_ios`（macOS 计费分钟按 10 倍计）。
-- 产物名带 run number，保留 **3 天**，在对应 run 的 Artifacts 里下载。
-- **仓库当前是 public**：公开仓库的 Actions artifact 可被第三方零凭证代理下载，
-  直接传含凭证 APK 等于把密钥送出去。因此工作流默认在 public 时**只构建自检、不上传**，
-  并给出 `::warning::`。
-  - 推荐做法：GitHub 仓库 → **Settings → General → 最底部 Danger Zone →
-    Change repository visibility → Make private**，然后重跑一次本工作流即自动上传。
-  - 若你确认接受风险、不想转 private：在 **Settings → Secrets and variables → Actions →
-    Variables** 新建 `BUNDLE_ALLOW_PUBLIC` = `1`，public 仓库也会照常上传。
+- **直接下 `.apk`（推荐）**：仓库 **Releases** 页 → 「自用语音翻译包（最新）」→
+  `weihan-selfuse-debug.apk`，点一下就是安装包，不用解压。
+  固定直链：`https://github.com/p12138/weihan/releases/download/selfuse-latest/weihan-selfuse-debug.apk`
+- **为什么 Artifacts 是 zip**：GitHub Actions 的 Artifacts 由平台强制打包成 zip，
+  无法改成裸文件；想下原始 `.apk` 只能走 Releases（本工作流已自动发布）。
+- 滚动 tag `selfuse-latest` 每次构建都被覆盖，Releases 页永远只挂最新包；
+  Artifacts 里同名的 `weihan-selfuse-bundled-apk-<run号>`（zip）保留 **3 天**作为备份。
+- **仓库已是 private**（2026-11-11）：早期 public 时工作流只构建、不上传；
+  现在 guard 判定 `REPO_PRIVATE=true` 会自动上传并发布。
+  若哪天又转回 public，仍可用 Variable `BUNDLE_ALLOW_PUBLIC=1` 显式放开（风险自负）。
 
 ### 必须接受的风险
 
