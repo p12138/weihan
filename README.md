@@ -62,8 +62,8 @@
 | `lib/speech_config.dart` | 讯飞语音凭证、维语/中文发音人 vcn、代理地址（内存，不落盘） |
 | `lib/xfyun_speech.dart` | HMAC-SHA256 签名 + wss 多语种 ASR / TTS 协议实现，传输层可注入 |
 | `lib/default_speech.dart` | `ConfigurableSpeechPort`：设置页保存凭证后立即生效，无需重新出包 |
-| `lib/device_audio.dart` | 录音（16k/16bit/单声道 PCM 流）与播放（mp3）平台端口 |
-| `lib/speech_pipeline.dart` | 三环编排：ASR → MT → TTS |
+| `lib/device_audio.dart` | 录音（16k/16bit/单声道 PCM 流）、实时音量（dBFS→0..1）、播放（mp3，含音频会话配置） |
+| `lib/speech_pipeline.dart` | 三环编排：ASR → MT → TTS；合成失败降级为 `speakError`，不丢文字 |
 | `lib/conversation_page.dart` | 对话 UI（维文 RTL、方向切换、语音按钮、译文朗读、云端设置） |
 | `lib/theme.dart` | 四套主题配色 `BrandPalette` + 全局色板 `AppColors` + 组件默认样式、维文行距 |
 | `lib/palette_controller.dart` | 主题切换的唯一入口（改色板 → 通知 → 重建） |
@@ -72,6 +72,7 @@
 | `scripts/make_icons.py` | 生成双端图标与启动图（numpy SDF 光栅化 + zlib 写 PNG，无第三方依赖） |
 | `test/ui_brand_test.dart` | 视觉回归：标语、品牌标识、方向胶囊、按住说话的语音按钮 |
 | `test/theme_test.dart` | 主题系统回归：色板完整性、切换生效、设置页换色 |
+| `test/audio_level_test.dart` | 音量映射单测：满幅 / 静音 / 正常说话的区间与单调性 |
 | `lib/bundled_config.dart` | 编译期「凭证已内置」标记（不含任何值），驱动设置页不回显密钥 |
 | `scripts/write_bundle_defines.py` | 从 CI 环境变量生成 `--dart-define-from-file` JSON，只打印键名 |
 | `.github/workflows/selfuse-bundled.yml` | 自带凭证自用包出包工作流（Android 自动 / iOS 手动可选） |
@@ -408,10 +409,16 @@ E2E UI 回归通过：录音启停 / 双气泡 / 自动朗读 / 朗读按钮
 | 提示里出现 | 含义 | 处理 |
 |---|---|---|
 | `合成失败 11200` | 维语发音人未开通 / vcn 填错 | 控制台开通民族发音人，复制正确 vcn 重填 |
+| `朗读失败 · 维语发音人 vcn 未配置` | 只填了识别凭证，没填维语发音人 | 设置页「维语发音人」填控制台里的 vcn；文字译文不受影响 |
+| `朗读失败 · 合成返回空音频` | 服务端受理了但没吐音频 | 多为该发音人未购买或额度用尽，去控制台看用量 |
+| `播放失败 · …` | 音频已合成，手机放不出来 | 检查是否插着耳机 / 静音模式；iOS 已强制 playback 分类，安卓走 assistant 焦点 |
 | `识别失败 10160` / `10165` | 免费包没领或已过期 | 产品页领 0 元包，或看第 5 节的长期方案 |
 | `HMAC signature does not match` | 签名/时钟不对 | 三个凭证必须来自同一应用；手机时间设为自动 |
 | `识别超时` / `网络异常` | 手机到讯飞端点不通 | 换网络，关掉全局代理 / VPN |
 | `语音失败 · 没有识别到语音` | 没录到声音 | 允许麦克风权限，靠近话筒，说话长一点 |
+
+音频链路现在分三段提示，出问题能直接定位到「识别 / 翻译 / 合成 / 播放」哪一环，
+而不是笼统一句「语音失败」。录音时看音量条也能立刻确认麦克风有没有在收声。
 
 密钥只存在进程内存，重装需重填；诊断信息会剥掉带鉴权参数的 URL，不泄露凭证。
 
@@ -453,8 +460,19 @@ E2E UI 回归通过：录音启停 / 双气泡 / 自动朗读 / 朗读按钮
 - **按住说话**：语音按钮是「按下就开始录、松手就结束」，不是点一下开始、再点一下
   结束。`Listener` 直接收原始指针事件（`onPointerDown/Up/Cancel`），不等手势竞技场
   判胜负，所以按下那一瞬间就开始录音；手指滑出按钮再松开也能正常收尾，来电之类的
-  系统打断会走 `onPointerCancel`。按下时按钮缩到 0.975 并换警示色，录音中出现五根
-  静态声波条；录到的音频为空时明确提示「没录到声音」，不把空音频丢给云端。
+  系统打断会走 `onPointerCancel`。按下时按钮缩到 0.975 并换警示色；录到的音频为空时
+  明确提示「没录到声音」，不把空音频丢给云端。
+- **录音音量可视化（微信式）**：录音时浮层从会话区底部浮出，13 根竖条的高度吃的是
+  **真实麦克风音量**（`AudioPort.levels`，`record` 的 `onAmplitudeChanged` 每 90ms
+  给一次 dBFS，映射成 0..1 后用 √ 压低端），旁边跟着计时。安静时条条贴地平躺、
+  说话时中间那几根先窜起来 —— 一眼就能判断「到底有没有在收我的声音」，而不是
+  摆几根随机跳动的假条糊弄。没有音量流（测试里的假实现）时它就静止不动，
+  不影响录音，也不会让 `pumpAndSettle` 挂死（不用 Timer、不用 `repeat()`）。
+- **朗读失败不吞文字**：识别 → 翻译 → 合成里，只有前两步是「必须成功」的。
+  合成抛错或被服务端判空时，原文与译文照常上屏，提示里直接写清原因
+  （例如「维语发音人 vcn 未配置 · 到设置页填讯飞「发音人管理」里的维吾尔语发音人」），
+  译文气泡右侧的喇叭还能手动重试。早期版本把合成异常当整轮失败，表现就是
+  「说中文没声音、连字都没出来」。
 - **可读性细节**：维吾尔文用 19px / 1.95 行距（阿拉伯字母连写需要更松的行距）；
   系统字号放大最多按 1.3 倍收口，避免气泡与输入区挤成一团。
 - **无动画依赖**：全页没有无限循环动画（脉冲、loading 圈），`pumpAndSettle`
@@ -531,17 +549,34 @@ CI 会先跑 `test/bundled_config_test.dart`（带同一份 define 文件）确�
 | 产物 | 出自 | 含凭证 | 用途 |
 |---|---|---|---|
 | `verify-debug-apk-*` | `verify-first-build` | 否 | 干净门禁包，装了要在设置页填一次；可安全给人 |
-| `weihan-selfuse-debug.apk`（Releases） | `selfuse-bundled-build` | **是** | 本人自用，开箱即用，**不要分发** |
-| `weihan-selfuse-bundled-apk-*`（Artifacts，zip） | 同上 | **是** | 同一份包的 zip 备份，保留 3 天 |
+| `weihan-selfuse-arm64.apk`（Releases，推荐） | `selfuse-bundled-build` | **是** | 本人自用，64 位手机，体积最小 |
+| `weihan-selfuse-v7a.apk`（Releases） | 同上 | **是** | 32 位老机器兜底 |
+| `weihan-selfuse-debug-fallback.apk`（Releases） | 同上 | **是** | 上面两个装不上/闪退时才用，体积大 |
+| `weihan-selfuse-bundled-apk-*`（Artifacts，zip） | 同上 | **是** | 同一批包的 zip 备份，保留 3 天 |
 | `weihan-selfuse-bundled-simulator.ipa` | 同上（手动勾选 with_ios） | **是** | iOS 模拟器自用，未签名 |
+
+### 体积（2026-11-11 起）
+
+早期只出 `flutter build apk --debug`，四个 ABI 各带一份 JIT 引擎，**实测 189 MB**，
+传个微信都要转半天。现在改成 release + 按 ABI 分包：
+
+| 包 | 构建方式 | 典型体积 |
+|---|---|---|
+| `arm64-v8a` release | `--release --split-per-abi` | ≈ 20 MB |
+| `armeabi-v7a` release | 同上 | ≈ 18 MB |
+| debug 兜底 | `--debug --target-platform android-arm64` | ≈ 80 MB |
+
+降幅来自三件事：AOT 编译去掉 JIT 引擎与 kernel 快照、单 ABI 不再背四份
+`libflutter.so`、release 默认开启图标字体 tree-shaking。没有开 R8/资源压缩——
+那需要为每个插件写 keep 规则，省下的 MB 抵不上一次线上崩溃的排查成本。
 
 ### 触发方式与下载
 
 - `lib/` / `pubspec` / 原生壳 / `scripts/` / 本工作流变更并 push 到 main 时**自动跑**；
   也可在 Actions 页手动 `Run workflow`。想顺带出 iOS 包，勾 `with_ios`（macOS 计费分钟按 10 倍计）。
 - **直接下 `.apk`（推荐）**：仓库 **Releases** 页 → 「自用语音翻译包（最新）」→
-  `weihan-selfuse-debug.apk`，点一下就是安装包，不用解压。
-  固定直链：`https://github.com/p12138/weihan/releases/download/selfuse-latest/weihan-selfuse-debug.apk`
+  `weihan-selfuse-arm64.apk`，点一下就是安装包，不用解压。
+  固定直链：`https://github.com/p12138/weihan/releases/download/selfuse-latest/weihan-selfuse-arm64.apk`
 - **为什么 Artifacts 是 zip**：GitHub Actions 的 Artifacts 由平台强制打包成 zip，
   无法改成裸文件；想下原始 `.apk` 只能走 Releases（本工作流已自动发布）。
 - 每次构建会发两个 Release：滚动 tag `selfuse-latest`（覆盖，直链固定）与

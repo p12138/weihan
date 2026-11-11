@@ -15,6 +15,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:uyghur_interpreter/conversation.dart';
 import 'package:uyghur_interpreter/conversation_page.dart';
 import 'package:uyghur_interpreter/device_audio.dart';
+import 'package:uyghur_interpreter/xfyun_speech.dart' show SpeechException;
 
 const String _resultPath = '/tmp/weihan_e2e.json';
 
@@ -113,6 +114,56 @@ void main() {
     expect(find.text(ugTranslated), findsOneWidget);
     expect(mic.played.length, 1);
   });
+
+  // 维语发音人没开通时：文字照常出，只是多一行「朗读失败」，绝不静默。
+  testWidgets('E2E UI：朗读失败不吞译文，并说明原因', (WidgetTester tester) async {
+    final _FakeAudioPort mic = _FakeAudioPort(scriptAudio);
+
+    await tester.pumpWidget(MaterialApp(
+      home: ConversationPage(
+        speech: _BrokenSpeakPort(heard: zhHeard),
+        translator: _ReplayTranslator(zhTranslated),
+        audio: mic,
+      ),
+    ));
+
+    final Finder voice = find.byKey(const ValueKey<String>('voice-button'));
+    final TestGesture hold = await tester.startGesture(tester.getCenter(voice));
+    await tester.pump();
+    await tester.pump();
+    await hold.up();
+    await tester.pumpAndSettle();
+
+    expect(find.text(zhHeard), findsOneWidget, reason: '识别原文不该丢');
+    expect(find.text(zhTranslated), findsOneWidget, reason: '译文不该丢');
+    expect(find.textContaining('朗读失败'), findsOneWidget);
+    expect(mic.played, isEmpty, reason: '没有音频就不该调用播放');
+  });
+
+  // 录音时浮出音量面板；没有音量流（假实现）也要稳定渲染、不卡住。
+  testWidgets('E2E UI：录音时浮出音量面板', (WidgetTester tester) async {
+    final _FakeAudioPort mic = _FakeAudioPort(scriptAudio);
+
+    await tester.pumpWidget(MaterialApp(
+      home: ConversationPage(
+        speech: _ReplaySpeechPort(heard: zhHeard, audio: scriptAudio),
+        translator: _ReplayTranslator(zhTranslated),
+        audio: mic,
+      ),
+    ));
+
+    final Finder voice = find.byKey(const ValueKey<String>('voice-button'));
+    expect(find.text('松手结束'), findsNothing, reason: '没录音时不该有浮层');
+
+    final TestGesture hold = await tester.startGesture(tester.getCenter(voice));
+    await tester.pumpAndSettle();
+    expect(mic.starts, 1);
+    expect(find.text('松手结束'), findsOneWidget);
+
+    await hold.up();
+    await tester.pumpAndSettle();
+    expect(find.text('松手结束'), findsNothing, reason: '松手后浮层要收起来');
+  });
 }
 
 /// 假录音 / 播放端口：只记录调用，不触碰 record / audioplayers 平台通道。
@@ -161,8 +212,25 @@ class _ReplaySpeechPort implements SpeechPort {
   Future<Uint8List> speak(String text, Language language) async => audio;
 }
 
-class _ReplayTranslator implements Translator {
-  const _ReplayTranslator(this.translated);
+/// 识别正常、合成失败：模拟维语发音人未开通 / 额度用尽。
+class _BrokenSpeakPort implements SpeechPort {
+  const _BrokenSpeakPort({required this.heard});
+
+  final String heard;
+
+  @override
+  bool get isAvailable => true;
+
+  @override
+  Future<String> listen(Uint8List pcm, Language language) async => heard;
+
+  @override
+  Future<Uint8List> speak(String text, Language language) async {
+    throw const SpeechException('维语发音人 vcn 未配置 · 到设置页填写');
+  }
+}
+
+class _ReplayTranslator implements Translator {  const _ReplayTranslator(this.translated);
 
   final String translated;
 

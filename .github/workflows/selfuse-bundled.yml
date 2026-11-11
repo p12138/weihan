@@ -93,7 +93,8 @@ jobs:
         if: ${{ steps.decide.outputs.draft == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ASSET_NAME: weihan-selfuse-debug.apk
+          # 历史上用过的所有含凭证附件名，任何一个都不能留在公开 Release 里。
+          ASSET_NAMES: weihan-selfuse-debug.apk,weihan-selfuse-debug-fallback.apk,weihan-selfuse-arm64.apk,weihan-selfuse-v7a.apk
         run: |
           set -euo pipefail
           # 仓库从 private 转 public 时，之前发布的自带凭证包会突然变成人人可下载。
@@ -106,7 +107,7 @@ jobs:
           import json, os, subprocess
 
           repo = os.environ['GITHUB_REPOSITORY']
-          asset_name = os.environ['ASSET_NAME']
+          asset_names = {n.strip() for n in os.environ['ASSET_NAMES'].split(',') if n.strip()}
 
           def api(*args):
               return subprocess.run(['gh', 'api', *args], capture_output=True, text=True)
@@ -125,7 +126,7 @@ jobs:
               print('::notice::%s 转草稿被拒：%s' % (tag, (p.stderr or '').strip()[:160]))
 
               # 2) 删掉它里面的 APK 附件
-              assets = [a for a in rel.get('assets', []) if a['name'] == asset_name]
+              assets = [a for a in rel.get('assets', []) if a['name'] in asset_names]
               removed = 0
               for asset in assets:
                   d = api('-X', 'DELETE', 'repos/%s/releases/assets/%s' % (repo, asset['id']))
@@ -202,34 +203,53 @@ jobs:
             exit 1
           fi
 
-      - name: Build 自带凭证 debug APK
+      # 体积：debug 包带 JIT 引擎 + 全套 ABI，实测 189MB；release 是 AOT 单 ABI，
+      # 通常 15～22MB。这里按 ABI 分包，arm64 给绝大多数手机，armeabi-v7a 兜老机器。
+      - name: Build 自带凭证 release APK（按 ABI 分包）
         run: |
           set -o pipefail
           for attempt in 1 2 3; do
-            echo "::group::flutter build apk (attempt ${attempt}/3)"
-            if flutter build apk --debug \
+            echo "::group::flutter build apk --release (attempt ${attempt}/3)"
+            if flutter build apk --release --split-per-abi \
+                --target-platform android-arm,android-arm64 \
                 --dart-define-from-file=/tmp/weihan_bundle_defines.json \
                 2>&1 | tee /tmp/bundled_apk.log; then
               echo "::endgroup::"
+              ls -lh build/app/outputs/flutter-apk/*.apk
               exit 0
             fi
             echo "::endgroup::"
             python3 scripts/emit_build_error.py \
-              /tmp/bundled_apk.log "自带凭证 APK 构建" "${attempt}"
+              /tmp/bundled_apk.log "自带凭证 release APK 构建" "${attempt}"
             if [ "$attempt" -lt 3 ]; then
               echo "::warning::构建失败，10s 后重试（第 ${attempt}/3 次）"
               sleep 10
             fi
           done
-          echo "::error::自带凭证 APK 连续 3 次构建失败"
+          echo "::error::自带凭证 release APK 连续 3 次构建失败"
           exit 1
+
+      # 兜底：release 包万一在某台机器上起不来（AOT/插件问题），还能退回 debug。
+      # 它体积大，只在说明里标成「异常时使用」，且失败不判本次运行失败。
+      - name: Build 自带凭证 debug APK（兜底，体积大）
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          flutter build apk --debug --target-platform android-arm64 \
+            --dart-define-from-file=/tmp/weihan_bundle_defines.json \
+            2>&1 | tee /tmp/bundled_apk_debug.log || \
+            python3 scripts/emit_build_error.py \
+              /tmp/bundled_apk_debug.log "自带凭证 debug APK 构建" 1
+          ls -lh build/app/outputs/flutter-apk/*.apk
 
       - name: Upload build log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: bundled-apk-build-log-${{ github.run_number }}
-          path: /tmp/bundled_apk.log
+          path: |
+            /tmp/bundled_apk.log
+            /tmp/bundled_apk_debug.log
           if-no-files-found: warn
           retention-days: 7
 
@@ -245,24 +265,57 @@ jobs:
           if not apks:
               print('::error::没有找到构建产物 APK')
               raise SystemExit(1)
-          path = apks[0]
-          marker = b'BUNDLED_SELFUSE'
-          hit = []
-          with zipfile.ZipFile(path) as zf:
-              for name in zf.namelist():
-                  if not name.endswith(('.so', '.bin', '.dat', '.json')):
-                      continue
-                  try:
-                      data = zf.read(name)
-                  except (RuntimeError, OSError):
-                      continue
-                  if marker in data:
-                      hit.append(name)
-          print('APK 内命中编译期标记的文件：%s' % (', '.join(hit) or '无'))
-          if hit:
-              print('::notice::已确认编译期配置打进 %s（只查键名，未读取任何凭证值）' % path.split('/')[-1])
-          else:
-              print('::warning::APK 内未搜索到 BUNDLED_SELFUSE 字面量；Dart 侧注入自检已通过，通常只是 snapshot 编码差异')
+          # release 会把 Dart 常量折叠掉，BUNDLED_SELFUSE 这个标识符名可能
+          # 在 AOT 产物里已经不存在；于是同时找设置页那条固定文案的 UTF-8 字节。
+          markers = [b'BUNDLED_SELFUSE', '凭证已内置于安装包'.encode('utf-8')]
+          for path in apks:
+              hit = []
+              with zipfile.ZipFile(path) as zf:
+                  for name in zf.namelist():
+                      if not name.endswith(('.so', '.bin', '.dat', '.json')):
+                          continue
+                      try:
+                          data = zf.read(name)
+                      except (RuntimeError, OSError):
+                          continue
+                      if any(m in data for m in markers):
+                          hit.append(name)
+              label = path.split('/')[-1]
+              if hit:
+                  print('::notice::%s 已确认打入编译期配置（命中 %s，只查键名与固定文案）'
+                        % (label, ', '.join(hit)))
+              else:
+                  print('::warning::%s 内未搜索到编译期标记；Dart 侧注入自检已通过，'
+                        '通常只是 AOT 折叠差异' % label)
+          PY
+
+      - name: 体积对比
+        run: |
+          python3 - <<'PY'
+          import glob
+          import os
+
+          files = sorted(glob.glob('build/app/outputs/flutter-apk/*.apk'))
+          rows = []
+          for path in files:
+              size = os.path.getsize(path)
+              rows.append((os.path.basename(path), size))
+              print('%-32s %6.1f MB' % (os.path.basename(path), size / 1048576))
+
+          release = [r for r in rows if 'release' in r[0]]
+          debug = [r for r in rows if 'debug' in r[0]]
+          if release and debug:
+              best = min(r[1] for r in release)
+              dbg = debug[0][1]
+              saved = 100 * (1 - best / dbg)
+              print('::notice::最小包 %.1f MB，debug 包 %.1f MB，体积降到 %.0f%%（省 %.0f%%）'
+                    % (best / 1048576, dbg / 1048576,
+                       100.0 * best / dbg, saved))
+          with open(os.environ.get('GITHUB_STEP_SUMMARY', '/dev/null'), 'a',
+                    encoding='utf-8') as out:
+              out.write('\n### 安装包体积\n\n| 文件 | 大小 |\n| --- | --- |\n')
+              for name, size in rows:
+                  out.write('| %s | %.1f MB |\n' % (name, size / 1048576))
           PY
 
       - name: Upload 自带凭证 APK
@@ -277,7 +330,7 @@ jobs:
       # Actions 的 Artifacts 一定是 zip（平台强制），想直接下 .apk 只能走 Releases。
       # 每次构建发两个 Release：
       #   * 滚动 tag selfuse-latest —— 永远指向最新包，直链固定不变：
-      #     https://github.com/<owner>/<repo>/releases/download/selfuse-latest/weihan-selfuse-debug.apk
+      #     https://github.com/<owner>/<repo>/releases/download/selfuse-latest/weihan-selfuse-arm64.apk
       #   * 版本 tag v<版本>-build<run>  —— 留历史，方便回退到某一版
       - name: 发布到 Releases（免解压直链 + 历史版本）
         env:
@@ -289,10 +342,33 @@ jobs:
           version="$(python3 -c "import re,sys; m=re.search(r'^version:\s*([0-9.]+)', open('pubspec.yaml',encoding='utf-8').read(), re.M); print(m.group(1) if m else '0.0.0')")"
           tag="v${version}-build${GITHUB_RUN_NUMBER}"
           commit="${GITHUB_SHA:0:7}"
-          apk="$(ls build/app/outputs/flutter-apk/*.apk | head -n1)"
-          cp "$apk" weihan-selfuse-debug.apk
-          sha="$(sha256sum weihan-selfuse-debug.apk | cut -d' ' -f1)"
-          size="$(du -h weihan-selfuse-debug.apk | cut -f1)"
+          dir=build/app/outputs/flutter-apk
+
+          # 产物换名字再发布：手机上下载时一眼能看出该装哪个。
+          declare -a names=()
+          add() {
+            if [ -f "$1" ]; then
+              cp "$1" "$2"
+              names+=("$2")
+            fi
+          }
+          add "$dir/app-arm64-v8a-release.apk" weihan-selfuse-arm64.apk
+          add "$dir/app-armeabi-v7a-release.apk" weihan-selfuse-v7a.apk
+          add "$dir/app-debug.apk" weihan-selfuse-debug-fallback.apk
+
+          if [ "${#names[@]}" -eq 0 ]; then
+            echo "::error::没有可发布的 APK"
+            exit 1
+          fi
+
+          listing=""
+          for f in "${names[@]}"; do
+            sha="$(sha256sum "$f" | cut -d' ' -f1)"
+            size="$(du -h "$f" | cut -f1)"
+            listing="${listing}
+          · ${f}（${size}）SHA-256 ${sha}"
+          done
+          echo "::notice::本轮产物：${names[*]}"
 
           # 草稿模式：只有仓库写权限者登录后可见可下载。
           if [ "${DRAFT}" = "true" ]; then
@@ -303,8 +379,13 @@ jobs:
 
           note="自带凭证的自用语音翻译包，装到手机即可使用，设置页无需填写任何内容。
           版本 ${version} · 构建 #${GITHUB_RUN_NUMBER} · commit ${commit}
-          APK SHA-256：${sha}
-          体积：${size}${visibility_note}
+
+          【怎么选】绝大多数手机（2015 年后、64 位）装 weihan-selfuse-arm64.apk，体积最小；
+          很老的 32 位机器才装 weihan-selfuse-v7a.apk；
+          weihan-selfuse-debug-fallback.apk 只在上面两个装不上或闪退时使用（体积大很多）。
+
+          产物与校验值：${listing}
+          ${visibility_note}
           ⚠️ 凭证可被打包体反编译提取，请勿分发本包。"
 
           # 草稿 Release 在 releases/tags 接口上查不到，只能用列表判断是否已存在。
@@ -324,33 +405,32 @@ jobs:
                 || echo "::warning::删除旧的 ${ROLLING_TAG} 失败，下面创建可能报 already exists"
             fi
             gh release create "$ROLLING_TAG" --title "自用语音翻译包（最新）" \
-              --notes "$note" --draft
-            gh release upload "$ROLLING_TAG" weihan-selfuse-debug.apk --clobber
+              --notes "$note" --draft "${names[@]}"
 
             gh release create "$tag" --title "融合 ${version}（构建 ${GITHUB_RUN_NUMBER}）" \
-              --notes "$note" --draft weihan-selfuse-debug.apk
+              --notes "$note" --draft "${names[@]}"
 
-            echo "::notice::APK 已发为草稿 Release（${ROLLING_TAG} / ${tag}）。登录 GitHub 后在 Releases 页可见，直链 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${ROLLING_TAG}/weihan-selfuse-debug.apk （sha256 ${sha}）"
+            echo "::notice::已发为草稿 Release（${ROLLING_TAG} / ${tag}，共 ${#names[@]} 个包）。登录 GitHub 后在 Releases 页可见，推荐直链 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${ROLLING_TAG}/weihan-selfuse-arm64.apk"
             exit 0
           fi
 
-          # 公开模式（private 仓库或显式放开）：滚动 tag 覆盖同一个文件，直链永远最新
+          # 公开模式（private 仓库或显式放开）：滚动 tag 覆盖同一批文件，直链永远最新
           if has_release "$ROLLING_TAG"; then
             gh release edit "$ROLLING_TAG" --title "自用语音翻译包（最新）" --notes "$note" --draft=false
           else
             gh release create "$ROLLING_TAG" --title "自用语音翻译包（最新）" --notes "$note"
           fi
-          gh release upload "$ROLLING_TAG" weihan-selfuse-debug.apk --clobber
+          gh release upload "$ROLLING_TAG" "${names[@]}" --clobber
 
           # 版本 tag：留历史，出问题可回到某一版
           if has_release "$tag"; then
             echo "::notice::${tag} 已存在，跳过历史版本创建"
           else
             gh release create "$tag" --title "融合 ${version}（构建 ${GITHUB_RUN_NUMBER}）" \
-              --notes "$note" weihan-selfuse-debug.apk
+              --notes "$note" "${names[@]}"
           fi
 
-          echo "::notice::已发布：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${ROLLING_TAG}/weihan-selfuse-debug.apk （sha256 ${sha}）"
+          echo "::notice::已发布：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${ROLLING_TAG}/weihan-selfuse-arm64.apk"
 
       - name: 公开仓库说明（只出草稿包）
         if: ${{ needs.guard.outputs.artifact != 'true' }}
@@ -448,13 +528,15 @@ jobs:
           if [ "${{ needs.guard.outputs.draft }}" = "true" ]; then
             echo "**仓库为 public → 本轮发的是草稿 Release**：登录你的 GitHub 账号后打开 [Releases 页面](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases) 即可看到并下载，匿名访客打不开。" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "直链（需登录）：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/selfuse-latest/weihan-selfuse-debug.apk" >> "$GITHUB_STEP_SUMMARY"
+            echo "推荐直链（需登录）：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/selfuse-latest/weihan-selfuse-arm64.apk" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "**直接下载 APK（无需解压）**：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/selfuse-latest/weihan-selfuse-debug.apk" >> "$GITHUB_STEP_SUMMARY"
+            echo "**直接下载 APK（无需解压）**：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/selfuse-latest/weihan-selfuse-arm64.apk" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             if [ "${{ needs.guard.outputs.artifact }}" = "true" ]; then
               echo "也可从 [Releases 页面](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases) 下载；Artifacts 里的同名产物是 zip 备份，保留 3 天。" >> "$GITHUB_STEP_SUMMARY"
             fi
           fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**怎么选**：64 位手机装 \`weihan-selfuse-arm64.apk\`；老 32 位机器装 \`weihan-selfuse-v7a.apk\`；两个都装不上才用 \`weihan-selfuse-debug-fallback.apk\`（体积大）。" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**注意**：凭证在安装包二进制中可被反编译提取，请勿分发此包。" >> "$GITHUB_STEP_SUMMARY"

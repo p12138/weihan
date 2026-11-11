@@ -402,6 +402,27 @@ TtsFrame parseTtsMessage(String message) {
   );
 }
 
+/// 讯飞合成常见错误码的可操作提示。
+///
+/// 服务端 message 往往只有「参数错误」这种模糊字样，真正原因（发音人没买、
+/// 当天额度用完）只能靠错误码区分，所以直接把码翻成人能看懂的话。
+String ttsHint(int code) {
+  switch (code) {
+    case 11200:
+      return ' · 该发音人未授权或语音合成服务未开通（控制台 → 发音人管理）';
+    case 11201:
+      return ' · 当天调用量已超限';
+    case 10105:
+      return ' · 参数不合法：多为 vcn 填错或文本编码不对';
+    case 10106:
+      return ' · 请求参数过长（单次合成字数超限）';
+    case 10003:
+      return ' · 访问上游超时，稍后重试';
+    default:
+      return '';
+  }
+}
+
 /// 讯飞语音端口：实现 conversation.dart 里的 SpeechPort 接口。
 class XfyunSpeechPort implements SpeechPort {
   XfyunSpeechPort({
@@ -545,8 +566,8 @@ class XfyunSpeechPort implements SpeechPort {
         isUyghur ? config.ugVcn.trim() : config.zhVcn.trim();
     if (vcn.isEmpty) {
       throw SpeechException(isUyghur
-          ? '未配置维吾尔语发音人 vcn（控制台发音人管理里查看）'
-          : '未配置中文发音人 vcn');
+          ? '维语发音人 vcn 未配置 · 到设置页填讯飞「发音人管理」里的维吾尔语发音人'
+          : '中文发音人 vcn 未配置 · 到设置页填写');
     }
     if (text.trim().isEmpty) {
       return Uint8List(0);
@@ -562,8 +583,8 @@ class XfyunSpeechPort implements SpeechPort {
         (String message) {
           final TtsFrame frame = parseTtsMessage(message);
           if (frame.code != 0 && !done.isCompleted) {
-            done.completeError(
-                SpeechException('合成失败 ${frame.code}: ${frame.message}'));
+            done.completeError(SpeechException(
+                '合成失败 ${frame.code}: ${frame.message}${ttsHint(frame.code)}'));
             return;
           }
           audio.add(frame.audio);
@@ -587,6 +608,11 @@ class XfyunSpeechPort implements SpeechPort {
         const Duration(seconds: 25),
         onTimeout: () => throw const SpeechException('合成超时（25 秒）'),
       );
+      if (result.isEmpty) {
+        throw SpeechException(isUyghur
+            ? '维语合成返回空音频 · 该发音人可能未在控制台开通或额度用尽'
+            : '中文合成返回空音频 · 该发音人可能未在控制台开通或额度用尽');
+      }
       config.lastDiagnostic = '';
       return result;
     } on Object catch (error) {

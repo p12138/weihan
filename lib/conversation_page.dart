@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -47,6 +49,14 @@ class _ConversationPageState extends State<ConversationPage> {
   /// 正在申请权限 / 启动录音，避免连点重复起流。
   bool _starting = false;
 
+  /// 录音时的实时音量（0..1），驱动浮层里的音量条。
+  double _level = 0;
+  StreamSubscription<double>? _levelSubscription;
+
+  /// 录音计时。只在有音量回调时刷新界面，不额外起定时器 ——
+  /// 定时器在 widget 测试里会一直挂着，pumpAndSettle 永远等不到收敛。
+  final Stopwatch _recordWatch = Stopwatch();
+
   int _nextId = 0;
   AudioPort? _audioPort;
   late final SpeechPipeline _pipeline = SpeechPipeline(
@@ -56,6 +66,9 @@ class _ConversationPageState extends State<ConversationPage> {
 
   @override
   void dispose() {
+    _levelSubscription?.cancel();
+    _levelSubscription = null;
+    _audioPort?.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -154,8 +167,9 @@ class _ConversationPageState extends State<ConversationPage> {
       }
       setState(() {
         _recording = true;
-        _notice = '正在录音 · 松手结束';
+        _notice = '正在说话 · 松手结束';
       });
+      _startLevels();
     } on Object catch (error) {
       if (!mounted) {
         return;
@@ -178,6 +192,7 @@ class _ConversationPageState extends State<ConversationPage> {
 
   /// 丢弃一段录音：结束不抛错，失败也只是日志。
   Future<void> _stopSilently() async {
+    _stopLevels();
     try {
       await _audio().stopRecord();
     } on Object catch (error) {
@@ -185,7 +200,37 @@ class _ConversationPageState extends State<ConversationPage> {
     }
   }
 
+  /// 订阅实时音量。没有这条流（假实现 / 平台不支持）时什么也不做，
+  /// 浮层退化成不动的音量条，录音本身不受影响。
+  void _startLevels() {
+    _stopLevels();
+    _recordWatch
+      ..reset()
+      ..start();
+    _levelSubscription = _audio().levels.listen(
+      (double level) {
+        if (!mounted) {
+          return;
+        }
+        setState(() => _level = level);
+      },
+      onError: (Object error) {
+        debugPrint('音量流错误：$error');
+      },
+    );
+  }
+
+  void _stopLevels() {
+    _levelSubscription?.cancel();
+    _levelSubscription = null;
+    _recordWatch
+      ..stop()
+      ..reset();
+    _level = 0;
+  }
+
   Future<void> _finishVoice() async {
+    _stopLevels();
     setState(() {
       _recording = false;
       _busy = true;
@@ -208,6 +253,7 @@ class _ConversationPageState extends State<ConversationPage> {
       if (!mounted) {
         return;
       }
+      final String? speakError = turn.speakError;
       setState(() {
         _busy = false;
         _state = _state.add(_newMessage(turn.heard, direction.source, true));
@@ -216,12 +262,26 @@ class _ConversationPageState extends State<ConversationPage> {
             _newMessage(turn.translation.text, direction.target, false),
           );
           _notice = '识别到「${turn.heard}」· 由 ${turn.translation.provider} 翻译';
+          if (speakError != null) {
+            // 文字已经可用，只是没合成出音频：把原因摊开说，别让用户
+            // 只看到「没有声音」而在设置页里瞎试。
+            _notice = '$_notice · 朗读失败：${_brief(speakError)}';
+          }
         } else {
           _notice = '识别到「${turn.heard}」· 但未返回译文';
         }
       });
       if (turn.hasAudio) {
-        await _audio().play(turn.audio);
+        try {
+          await _audio().play(turn.audio);
+        } on Object catch (error) {
+          if (!mounted) {
+            return;
+          }
+          setState(() {
+            _notice = '译文已出 · 播放失败：${_brief(error.toString())}';
+          });
+        }
       }
     } on Object catch (error) {
       if (!mounted) {
@@ -239,9 +299,16 @@ class _ConversationPageState extends State<ConversationPage> {
   Future<void> _speak(String text, Language language) async {
     try {
       final Uint8List audio = await widget.speech.speak(text, language);
-      if (audio.isNotEmpty) {
-        await _audio().play(audio);
+      if (audio.isEmpty) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _notice = '没有拿到朗读音频 · 检查该语言发音人是否已在讯飞控制台开通';
+        });
+        return;
       }
+      await _audio().play(audio);
     } on Object catch (error) {
       if (!mounted) {
         return;
@@ -323,15 +390,38 @@ class _ConversationPageState extends State<ConversationPage> {
                 onSelect: _selectSource,
               ),
               Expanded(
-                child: _state.messages.isEmpty
-                    ? const _EmptyState()
-                    : _buildConversation(
-                        onSpeak: speechReady
-                            ? (String text, Language language) {
-                                _speak(text, language);
-                              }
-                            : null,
+                child: Stack(
+                  children: <Widget>[
+                    Positioned.fill(
+                      child: _state.messages.isEmpty
+                          ? const _EmptyState()
+                          : _buildConversation(
+                              onSpeak: speechReady
+                                  ? (String text, Language language) {
+                                      _speak(text, language);
+                                    }
+                                  : null,
+                            ),
+                    ),
+                    // 录音浮层：IgnorePointer 保证抬手事件仍然回到语音按钮，
+                    // 不会因为浮层盖上来而丢一次松手。
+                    if (_recording)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: Align(
+                            alignment: Alignment.bottomCenter,
+                            child: Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+                              child: _RecordingPanel(
+                                level: _level,
+                                elapsed: _recordWatch.elapsed,
+                              ),
+                            ),
+                          ),
+                        ),
                       ),
+                  ],
+                ),
               ),
               if (_notice.isNotEmpty) _NoticeBar(text: _notice),
               _Composer(
@@ -1138,6 +1228,150 @@ class _Waveform extends StatelessWidget {
             ),
           )
           .toList(),
+    );
+  }
+}
+
+/// 录音时浮在会话区底部的「微信式」音量卡片。
+///
+/// 条高直接吃真实麦克风音量（[level] 0..1），不是随机数：一旦没有输入就
+/// 贴地平躺，用户能一眼判断「到底有没有在收我的声音」。
+///
+/// 用 AnimatedContainer 做一次性补间，不挂 Timer、不用 repeat ——
+/// 否则 widget 测试里的 pumpAndSettle 会永远等不到收敛。
+class _RecordingPanel extends StatelessWidget {
+  const _RecordingPanel({required this.level, required this.elapsed});
+
+  /// 当前音量，0（安静）～ 1（满幅）。
+  final double level;
+
+  /// 已录时长。
+  final Duration elapsed;
+
+  String get _clock {
+    final int total = elapsed.inSeconds;
+    final String seconds = (total % 60).toString().padLeft(2, '0');
+    final String minutes = (total ~/ 60).toString();
+    return '$minutes:$seconds';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: <Color>[
+            AppColors.primaryDeep.withOpacity(0.94),
+            Color.lerp(AppColors.primaryDeep, Colors.black, 0.3) ??
+                AppColors.primaryDeep,
+          ],
+        ),
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: <BoxShadow>[
+          BoxShadow(
+            color: AppColors.primaryDeep.withOpacity(0.32),
+            blurRadius: 22,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Row(
+        children: <Widget>[
+          AnimatedScale(
+            scale: 1 + level * 0.1,
+            duration: const Duration(milliseconds: 90),
+            curve: Curves.easeOut,
+            child: Container(
+              width: 42,
+              height: 42,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.14),
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white.withOpacity(0.22)),
+              ),
+              child: const Icon(Icons.mic, size: 22, color: Colors.white),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                _LiveBars(level: level),
+                const SizedBox(height: 6),
+                Row(
+                  children: <Widget>[
+                    Text(
+                      '松手结束',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white.withOpacity(0.92),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      _clock,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.white.withOpacity(0.62),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 13 根随音量起伏的竖条：中间高、两边低，像一段被压扁的波形。
+class _LiveBars extends StatelessWidget {
+  const _LiveBars({required this.level});
+
+  final double level;
+
+  static const int _count = 13;
+
+  /// 中间高两边低的包络，保证静止时也是一条有形状的波形而不是一排等号。
+  double _envelope(int index) {
+    final double distance =
+        (index - (_count - 1) / 2).abs() / ((_count - 1) / 2);
+    return (1 - distance) * 0.75 + 0.25;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 30,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: List<Widget>.generate(_count, (int index) {
+          final double envelope = _envelope(index);
+          final double height = 4 + 26 * level * envelope;
+          return Padding(
+            padding: const EdgeInsets.only(right: 3),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 90),
+              curve: Curves.easeOut,
+              width: 3,
+              height: height.clamp(4.0, 30.0).toDouble(),
+              decoration: BoxDecoration(
+                color: Colors.white.withOpacity(0.35 + 0.55 * level),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          );
+        }),
+      ),
     );
   }
 }
