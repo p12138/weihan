@@ -6,9 +6,10 @@ name: selfuse-bundled-build
 # 安全边界（务必先读 README「自带凭证自用包」一节）：
 #   * 凭证不写源码、不写 Git 历史、不出现在命令行参数与构建日志；
 #   * 但凭证会打进安装包二进制，反编译可提取，等同把密钥交给拿到包的人；
-#   * 因此默认只在 PRIVATE 仓库上传产物。public 仓库本轮只构建自检、不上传，
-#     避免含凭证的 Actions artifact 被第三方零凭证下载。若明确接受该风险，
-#     把仓库 Variable BUNDLE_ALLOW_PUBLIC 设为 1 即可在 public 仓库也上传。
+#   * private 仓库：Artifact + 公开 Release 都传，最方便；
+#   * public 仓库：Artifact 与公开 Release 都能被匿名下载，所以只发「草稿 Release」
+#     —— 只有拥有写权限的你登录后可见可下载，并把历史上已公开的包自动撤回为草稿。
+#     若明确接受密钥外泄风险，把仓库 Variable BUNDLE_ALLOW_PUBLIC 设为 1 可强制公开上传。
 #
 # 与 verify-first-build.yml 的分工：
 #   * verify-first-build：无凭证的干净门禁包，push 必跑，可安全分发；
@@ -45,7 +46,8 @@ jobs:
     name: 凭证与可见性检查
     runs-on: ubuntu-latest
     outputs:
-      upload: ${{ steps.decide.outputs.upload }}
+      artifact: ${{ steps.decide.outputs.artifact }}
+      draft: ${{ steps.decide.outputs.draft }}
     env:
       # 仅做存在性判断，不打印任何值。
       NIUTRANS_APP_ID: ${{ secrets.NIUTRANS_APP_ID }}
@@ -69,19 +71,46 @@ jobs:
           fi
           echo "::notice::5 个必需 Secret 均已配置（未输出任何值）"
 
-      - name: 决定产物是否允许上传
+      - name: 决定发布方式（公开仓库只出草稿包）
         id: decide
         env:
           REPO_PRIVATE: ${{ github.event.repository.private }}
           ALLOW_PUBLIC: ${{ vars.BUNDLE_ALLOW_PUBLIC }}
         run: |
           if [ "$REPO_PRIVATE" = "true" ] || [ "$ALLOW_PUBLIC" = "1" ]; then
-            echo "upload=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::允许上传自带凭证产物（private 仓库或已显式放开）"
+            echo "artifact=true" >> "$GITHUB_OUTPUT"
+            echo "draft=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::允许公开上传自带凭证产物（private 仓库，或已显式放开 BUNDLE_ALLOW_PUBLIC）"
           else
-            echo "upload=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::仓库仍是 public：本轮只构建自检，不上传含凭证的安装包。把仓库转为 private 后重跑即可自动出包；若确认接受风险，可设 Variable BUNDLE_ALLOW_PUBLIC=1。"
+            # public 仓库：Artifact 与公开 Release 都能被匿名下载，含凭证的包不能放上去。
+            # 改成「草稿 Release」——只有拥有写权限的你登录后能看到与下载，匿名访客 404。
+            echo "artifact=false" >> "$GITHUB_OUTPUT"
+            echo "draft=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::仓库为 public：不上传 Artifact（可被第三方代理匿名下载），含凭证 APK 以草稿 Release 发布，只有你登录 GitHub 后能下载。"
           fi
+
+      - name: public 仓库时把历史公开包撤回为草稿
+        if: ${{ steps.decide.outputs.draft == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # 仓库从 private 转 public 时，之前发布的自带凭证包会突然变成人人可下载。
+          # 这里把已公开的 Release 全部改回草稿，让下载重新需要登录账号。
+          gh release list --limit 200 --json tagName,isDraft \
+            --jq '.[] | select(.isDraft == false) | .tagName' > /tmp/published_tags.txt || true
+          if [ ! -s /tmp/published_tags.txt ]; then
+            echo "::notice::没有已公开的 Release 需要撤回"
+            exit 0
+          fi
+          while read -r tag; do
+            [ -z "$tag" ] && continue
+            if gh release edit "$tag" --draft >/dev/null 2>&1; then
+              echo "::notice::已把 ${tag} 撤回为草稿（公开仓库不再匿名可下载）"
+            else
+              echo "::warning::撤回 ${tag} 失败，请到 Releases 页手动改为 Draft"
+            fi
+          done < /tmp/published_tags.txt
 
   bundled-apk:
     name: Android 自带凭证 APK
@@ -204,7 +233,7 @@ jobs:
           PY
 
       - name: Upload 自带凭证 APK
-        if: ${{ needs.guard.outputs.upload == 'true' }}
+        if: ${{ needs.guard.outputs.artifact == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: weihan-selfuse-bundled-apk-${{ github.run_number }}
@@ -218,10 +247,10 @@ jobs:
       #     https://github.com/<owner>/<repo>/releases/download/selfuse-latest/weihan-selfuse-debug.apk
       #   * 版本 tag v<版本>-build<run>  —— 留历史，方便回退到某一版
       - name: 发布到 Releases（免解压直链 + 历史版本）
-        if: ${{ needs.guard.outputs.upload == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ROLLING_TAG: selfuse-latest
+          DRAFT: ${{ needs.guard.outputs.draft }}
         run: |
           set -euo pipefail
           version="$(python3 -c "import re,sys; m=re.search(r'^version:\s*([0-9.]+)', open('pubspec.yaml',encoding='utf-8').read(), re.M); print(m.group(1) if m else '0.0.0')")"
@@ -232,34 +261,55 @@ jobs:
           sha="$(sha256sum weihan-selfuse-debug.apk | cut -d' ' -f1)"
           size="$(du -h weihan-selfuse-debug.apk | cut -f1)"
 
+          # 草稿模式：只有仓库写权限者登录后可见可下载；解除时显式取消草稿状态，
+          # 避免仓库转回 private 后包还留在草稿里找不到。
+          if [ "${DRAFT}" = "true" ]; then
+            edit_draft="--draft"
+            create_draft="--draft"
+            visibility_note="（草稿包：仓库为 public，请登录你的 GitHub 账号后下载）"
+          else
+            edit_draft="--draft=false"
+            create_draft=""
+            visibility_note=""
+          fi
+
           note="自带凭证的自用语音翻译包，装到手机即可使用，设置页无需填写任何内容。
           版本 ${version} · 构建 #${GITHUB_RUN_NUMBER} · commit ${commit}
           APK SHA-256：${sha}
-          体积：${size}
+          体积：${size}${visibility_note}
           ⚠️ 凭证可被打包体反编译提取，请勿分发本包。"
 
+          # 草稿 Release 在 releases/tags 接口上查不到，必须用 list 判断是否已存在。
+          has_release() {
+            gh release list --limit 200 --json tagName --jq '.[].tagName' | grep -qx "$1"
+          }
+
           # 滚动 tag：覆盖同一个文件，直链永远是最新版
-          if gh release view "$ROLLING_TAG" >/dev/null 2>&1; then
-            gh release edit "$ROLLING_TAG" --title "自用语音翻译包（最新）" --notes "$note"
+          if has_release "$ROLLING_TAG"; then
+            gh release edit "$ROLLING_TAG" --title "自用语音翻译包（最新）" --notes "$note" "$edit_draft"
           else
-            gh release create "$ROLLING_TAG" --title "自用语音翻译包（最新）" --notes "$note"
+            gh release create "$ROLLING_TAG" --title "自用语音翻译包（最新）" --notes "$note" $create_draft
           fi
           gh release upload "$ROLLING_TAG" weihan-selfuse-debug.apk --clobber
 
           # 版本 tag：留历史，出问题可回到某一版
-          if gh release view "$tag" >/dev/null 2>&1; then
+          if has_release "$tag"; then
             echo "::notice::${tag} 已存在，跳过历史版本创建"
           else
-            gh release create "$tag" --title "维汉互译 ${version}（构建 ${GITHUB_RUN_NUMBER}）" \
-              --notes "$note" weihan-selfuse-debug.apk
+            gh release create "$tag" --title "融合 ${version}（构建 ${GITHUB_RUN_NUMBER}）" \
+              --notes "$note" weihan-selfuse-debug.apk $create_draft
           fi
 
-          echo "::notice::已发布：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${ROLLING_TAG}/weihan-selfuse-debug.apk （sha256 ${sha}）"
+          if [ "${DRAFT}" = "true" ]; then
+            echo "::notice::APK 已发为草稿 Release（${ROLLING_TAG} / ${tag}）。登录 GitHub 后在 Releases 页可见，直链 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${ROLLING_TAG}/weihan-selfuse-debug.apk （sha256 ${sha}）"
+          else
+            echo "::notice::已发布：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${ROLLING_TAG}/weihan-selfuse-debug.apk （sha256 ${sha}）"
+          fi
 
-      - name: 公开仓库未上传产物
-        if: ${{ needs.guard.outputs.upload != 'true' }}
+      - name: 公开仓库说明（只出草稿包）
+        if: ${{ needs.guard.outputs.artifact != 'true' }}
         run: |
-          echo "::warning::自带凭证 APK 已构建并自检通过，但仓库为 public，为避免被匿名下载本轮不上传产物。转为 private 后重跑本工作流即可自动出包。"
+          echo "::notice::仓库为 public：Artifact 不上传（公开仓库的 artifact 可被匿名代理下载），含凭证 APK 已以上面的草稿 Release 发布，登录 GitHub 账号后可下载。"
 
       - name: 清理 runner 临时凭证文件
         if: always()
@@ -326,7 +376,7 @@ jobs:
           ls -lh dist/*.ipa
 
       - name: Upload 自带凭证 iOS IPA
-        if: ${{ needs.guard.outputs.upload == 'true' }}
+        if: ${{ needs.guard.outputs.artifact == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: weihan-selfuse-bundled-ipa-${{ github.run_number }}
@@ -348,13 +398,17 @@ jobs:
         run: |
           echo "### 自带凭证自用包" >> "$GITHUB_STEP_SUMMARY"
           echo "凭证由 Secrets 在编译期注入，装包后无需在设置页填任何内容。" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${{ needs.guard.outputs.upload }}" = "true" ]; then
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ needs.guard.outputs.draft }}" = "true" ]; then
+            echo "**仓库为 public → 本轮发的是草稿 Release**：登录你的 GitHub 账号后打开 [Releases 页面](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases) 即可看到并下载，匿名访客打不开。" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "直链（需登录）：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/selfuse-latest/weihan-selfuse-debug.apk" >> "$GITHUB_STEP_SUMMARY"
+          else
             echo "**直接下载 APK（无需解压）**：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/selfuse-latest/weihan-selfuse-debug.apk" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "也可从 [Releases 页面](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases) 下载；Artifacts 里的同名产物是 zip 备份，保留 3 天。" >> "$GITHUB_STEP_SUMMARY"
+            if [ "${{ needs.guard.outputs.artifact }}" = "true" ]; then
+              echo "也可从 [Releases 页面](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases) 下载；Artifacts 里的同名产物是 zip 备份，保留 3 天。" >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**注意**：凭证在安装包二进制中可被反编译提取，请勿分发此包。" >> "$GITHUB_STEP_SUMMARY"
-          if [ "${{ needs.guard.outputs.upload }}" != "true" ]; then
-            echo "> 本轮仓库为 public，产物未上传；转 private 后重跑即可自动出包。" >> "$GITHUB_STEP_SUMMARY"
-          fi

@@ -27,7 +27,8 @@
 > **2026-11-11 补充（选定的第三个方向）**：新增 `selfuse-bundled-build` 工作流，
 > 由 CI 在编译期注入凭证，产出**自带凭证的自用包**——装到手机开箱即用，
 > 设置页一次都不用填。代价是凭证会进安装包二进制、反编译可提取，
-> 因此默认只在 **private 仓库**上传产物。详见
+> 因此产物按仓库可见性分流：private 走公开 Release，public 只发**草稿 Release**
+> （仅你自己登录后可下载）。详见
 > [第 8 节](#8-自带凭证自用包完全免手填仅自用)。
 
 ---
@@ -511,9 +512,13 @@ CI 会先跑 `test/bundled_config_test.dart`（带同一份 define 文件）确�
   版本 tag `v<版本>-build<run号>`（留历史，出问题可回退到某一版）。
   Release 说明里写了版本、commit、APK 的 SHA-256 与体积。
 - Artifacts 里同名的 `weihan-selfuse-bundled-apk-<run号>`（zip）保留 **3 天**作为备份。
-- **仓库已是 private**（2026-11-11）：早期 public 时工作流只构建、不上传；
-  现在 guard 判定 `REPO_PRIVATE=true` 会自动上传并发布。
-  若哪天又转回 public，仍可用 Variable `BUNDLE_ALLOW_PUBLIC=1` 显式放开（风险自负）。
+- **仓库可见性决定发布方式**（2026-11-11 起）：
+  - **private**：Artifact + 公开 Release 都传，直链点开即下。
+  - **public**：Artifact 与公开 Release 都能被匿名下载（artifact 还有 nightly.link 这类
+    零凭证代理），所以工作流改为**只发草稿 Release**——只有拥有写权限的你登录后
+    能看见和下载，匿名访客 404；同时把历史上已公开的包**自动撤回为草稿**。
+    想看 CI 跑到哪一步又要安全，就用这个模式。
+  - 若明确接受密钥外泄风险（不建议）：Variable `BUNDLE_ALLOW_PUBLIC=1` 可强制公开上传。
 
 ### 必须接受的风险
 

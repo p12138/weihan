@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -1028,10 +1026,10 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                           color: AppColors.primarySoft,
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: Text(
+                        child: const Text(
                           kBundledCredentialsNotice,
-                          key: const ValueKey<String>('bundled-config-notice'),
-                          style: const TextStyle(
+                          key: ValueKey<String>('bundled-config-notice'),
+                          style: TextStyle(
                             fontSize: 12.5,
                             height: 1.5,
                             color: AppColors.primaryDeep,

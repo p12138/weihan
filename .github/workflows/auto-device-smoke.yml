@@ -91,6 +91,8 @@ jobs:
           arch: x86_64
           profile: pixel_5
           disable-animations: true
+          # 默认 600s 在共享 runner 上偶发不够（#19 就是卡在 boot 超时，与代码无关）。
+          emulator-boot-timeout: 1500
           script: bash scripts/device_smoke_android.sh
 
       - name: Upload simulator screenshot

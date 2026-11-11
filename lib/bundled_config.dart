@@ -13,9 +13,9 @@
 // 注意：内置凭证会打进安装包二进制，反编译可提取。这个开关只改善使用体验，
 // 不构成任何加密或保护，见 README「自带凭证自用包」一节。
 //
-// 分发边界：含凭证的产物只在 PRIVATE 仓库上传（selfuse-bundled.yml 里有守卫），
-// 因为 public 仓库的 Actions artifact 可被第三方零凭证下载。仓库已于 2026-11-11
-// 转为 private，此工作流因此会自动上传 weihan-selfuse-bundled-apk-<run号>。
+// 分发边界：含凭证的产物永远不进「匿名可下载」的位置。selfuse-bundled.yml 里按可见性分流：
+// private 仓库 → Artifact + 公开 Release；public 仓库 → 只发草稿 Release（仅写权限可下载），
+// 并把历史上已公开的包自动撤回为草稿。
 
 /// 当前安装包是否自带编译期注入的凭证。
 const bool kHasBundledCredentials = bool.fromEnvironment('BUNDLED_SELFUSE');
