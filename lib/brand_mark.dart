@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
 
-import 'theme.dart';
-
-/// 应用标识：与安装图标同源的「两枚对话气泡」。
+/// 应用标识：与桌面图标、启动页同源的「交织双环 + 中心星芒」。
 ///
-/// 和 `scripts/make_icons.py` 里的几何保持同一套比例（气泡位置、字条长度、
-/// 尾巴角度都对齐），这样启动图、桌面图标、应用内标识看起来是同一个东西。
+/// 几何对齐 `brand/app-icon.svg`：两条圆角带子各转 ±42° 互相穿插，中央一枚
+/// 四角星。颜色默认取品牌固定色，和桌面图标 / 启动页保持一致，不随主题漂移 ——
+/// 品牌标识应当稳定，主题换的是界面不是 logo。三个可选参数保留给需要换色的
+/// 场景，调用方全部用默认值时仍是 const 构造。
 class BrandMark extends StatelessWidget {
   const BrandMark({
     super.key,
@@ -18,13 +18,13 @@ class BrandMark extends StatelessWidget {
   /// 标识整体边长（正方形）。
   final double size;
 
-  /// 上方气泡（中文侧）颜色，默认白。
+  /// 中心星芒颜色，默认暖白 `#FFF6D8`。
   final Color? bubble;
 
-  /// 下方气泡（维文侧）颜色，默认跟随主题的强调色。
+  /// 青绿环的亮端，默认 `#57DCC3`。
   final Color? accent;
 
-  /// 气泡内文字条颜色，默认跟随主题的深主色。
+  /// 琥珀环的亮端，默认 `#FFB36B`。
   final Color? ink;
 
   @override
@@ -34,9 +34,9 @@ class BrandMark extends StatelessWidget {
       height: size,
       child: CustomPaint(
         painter: _BrandMarkPainter(
-          bubble: bubble ?? Colors.white,
-          accent: accent ?? AppColors.accent,
-          ink: ink ?? AppColors.primaryDeep,
+          star: bubble ?? const Color(0xFFFFF6D8),
+          teal: accent ?? const Color(0xFF57DCC3),
+          amber: ink ?? const Color(0xFFFFB36B),
         ),
       ),
     );
@@ -45,91 +45,92 @@ class BrandMark extends StatelessWidget {
 
 class _BrandMarkPainter extends CustomPainter {
   const _BrandMarkPainter({
-    required this.bubble,
-    required this.accent,
-    required this.ink,
+    required this.star,
+    required this.teal,
+    required this.amber,
   });
 
-  final Color bubble;
-  final Color accent;
-  final Color ink;
+  final Color star;
+  final Color teal;
+  final Color amber;
 
+  /// 两条带子先按「琥珀在下、青绿在上」叠放，再在左半屏把琥珀带补画一次，
+  /// 左右两个交叉点就有了不同的前后关系 —— 这就是「交织」而不是「叠放」。
   @override
   void paint(Canvas canvas, Size size) {
     final double s = size.shortestSide;
-    final double cx = size.width / 2;
-    final double cy = size.height / 2;
+    final Offset center = Offset(size.width / 2, size.height / 2);
+    final Rect bounds = Rect.fromCenter(center: center, width: s, height: s);
 
-    double px(double v) => cx + v * s;
-    double py(double v) => cy + v * s;
+    final Path amberRing = _rotatedRing(center, s * 0.74, s * 0.38, -0.72);
+    final Path tealRing = _rotatedRing(center, s * 0.74, s * 0.38, 0.72);
 
-    // 白色气泡 + 左下小尾巴
-    final Path white = Path()
-      ..addRRect(
-        RRect.fromRectAndRadius(
-          Rect.fromCenter(
-            center: Offset(px(-0.16), py(-0.14)),
-            width: 0.56 * s,
-            height: 0.37 * s,
-          ),
-          Radius.circular(0.085 * s),
-        ),
-      )
-      ..addPath(
-        Path()
-          ..moveTo(px(-0.38), py(0.015))
-          ..lineTo(px(-0.19), py(0.015))
-          ..lineTo(px(-0.365), py(0.185))
-          ..close(),
-        Offset.zero,
-      );
-    canvas.drawPath(white, Paint()..color = bubble);
+    final Paint stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = s * 0.145
+      ..strokeCap = StrokeCap.round;
 
-    // 中文侧两行字
-    _bar(canvas, px(-0.245), py(-0.195), 0.30 * s, 0.052 * s);
-    _bar(canvas, px(-0.245), py(-0.075), 0.21 * s, 0.052 * s);
+    final Shader amberShader = LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: <Color>[
+        amber,
+        Color.lerp(amber, const Color(0xFFFFE9B6), 0.6) ?? amber,
+      ],
+    ).createShader(bounds);
+    final Shader tealShader = LinearGradient(
+      begin: Alignment.bottomLeft,
+      end: Alignment.topRight,
+      colors: <Color>[
+        Color.lerp(teal, const Color(0xFF17979C), 0.55) ?? teal,
+        teal,
+      ],
+    ).createShader(bounds);
 
-    // 沙金气泡（压在白色气泡右下角之上）
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromCenter(
-          center: Offset(px(0.17), py(0.17)),
-          width: 0.54 * s,
-          height: 0.36 * s,
-        ),
-        Radius.circular(0.085 * s),
-      ),
-      Paint()..color = accent,
-    );
-    // 维文侧一行连写
-    _bar(canvas, px(0.19), py(0.165), 0.30 * s, 0.052 * s, color: ink);
+    canvas.drawPath(amberRing, stroke..shader = amberShader);
+    canvas.drawPath(tealRing, stroke..shader = tealShader);
+
+    canvas.save();
+    canvas.clipRect(Rect.fromLTWH(0, 0, size.width / 2, size.height));
+    canvas.drawPath(amberRing, stroke..shader = amberShader);
+    canvas.restore();
+
+    // 中心四角星：四条二次贝塞尔把尖端之间的边往内收，形成细长的星芒。
+    final double r = s * 0.145;
+    final double waist = r * 0.14;
+    final Path starPath = Path()
+      ..moveTo(center.dx, center.dy - r)
+      ..quadraticBezierTo(center.dx + waist, center.dy - waist,
+          center.dx + r, center.dy)
+      ..quadraticBezierTo(center.dx + waist, center.dy + waist,
+          center.dx, center.dy + r)
+      ..quadraticBezierTo(center.dx - waist, center.dy + waist,
+          center.dx - r, center.dy)
+      ..quadraticBezierTo(center.dx - waist, center.dy - waist,
+          center.dx, center.dy - r)
+      ..close();
+    canvas.drawPath(starPath, Paint()..color = star);
   }
 
-  void _bar(
-    Canvas canvas,
-    double cx,
-    double cy,
-    double width,
-    double height, {
-    Color? color,
-  }) {
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromCenter(center: Offset(cx, cy), width: width, height: height),
-        Radius.circular(height / 2),
-      ),
-      Paint()..color = color ?? ink,
-    );
+  Path _rotatedRing(
+      Offset center, double width, double height, double radians) {
+    final Path ring = Path()
+      ..addOval(Rect.fromCenter(center: center, width: width, height: height));
+    final Matrix4 matrix = Matrix4.identity()
+      ..translate(center.dx, center.dy)
+      ..rotateZ(radians)
+      ..translate(-center.dx, -center.dy);
+    return ring.transform(matrix.storage);
   }
 
   @override
   bool shouldRepaint(_BrandMarkPainter oldDelegate) =>
-      oldDelegate.bubble != bubble ||
-      oldDelegate.accent != accent ||
-      oldDelegate.ink != ink;
+      oldDelegate.star != star ||
+      oldDelegate.teal != teal ||
+      oldDelegate.amber != amber;
 }
 
-/// 圆形 / 圆角方形徽标底座：把 [BrandMark] 放进渐变底里，用作标题栏图标。
+/// 圆角方形徽标底座：把 [BrandMark] 放进半透明玻璃里，用作标题栏图标。
 class BrandBadge extends StatelessWidget {
   const BrandBadge({super.key, this.size = 40});
 

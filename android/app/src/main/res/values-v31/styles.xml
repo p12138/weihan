@@ -2,11 +2,11 @@
 <resources>
     <!-- Android 12+ 的系统启动屏：底色 + 居中图标，避免默认的白屏闪一下。 -->
     <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
-        <item name="android:windowSplashScreenBackground">@color/brand_deep</item>
+        <item name="android:windowSplashScreenBackground">@color/splash_bottom</item>
         <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher_foreground</item>
         <item name="android:windowBackground">@drawable/launch_background</item>
     </style>
     <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
-        <item name="android:windowBackground">@color/brand_deep</item>
+        <item name="android:windowBackground">@color/splash_bottom</item>
     </style>
 </resources>

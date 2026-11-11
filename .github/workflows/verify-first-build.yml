@@ -61,6 +61,11 @@ jobs:
       - name: Static self-check (structure / deps / secrets)
         run: python3 scripts/verify_project.py --scope all
 
+      # 图标 / 启动页由脚本从 brand/ 母版生成：文件缺失、尺寸错、或其它密度
+      # 残留旧启动图（会被系统优先选中盖住新设计）都要在这里判红。
+      - name: Brand assets check (icons / splash)
+        run: python3 scripts/generate_brand_assets.py --check
+
       - name: Install dependencies
         run: flutter pub get
 
@@ -197,7 +202,13 @@ jobs:
             echo "::notice::讯飞 live check 第 ${attempt}/2 次尝试"
             if flutter test --timeout 300s --reporter expanded test/live_xfyun_test.dart 2>&1 | tee /tmp/xfyun_live.log; then
               grep 'Xfyun live check:' /tmp/xfyun_live.log | while IFS= read -r line; do
-                echo "::notice::${line}"
+                # 维语发音人是账号侧授权：失败不判红（不是代码回归），但必须
+                # 在批注里显式告警，否则「CI 全绿 + 手机没声音」会看起来很矛盾。
+                case "$line" in
+                  *'维语音色暂不可用'*|*'未配置 XFYUN_UG_VCN'*)
+                    echo "::warning::${line}" ;;
+                  *) echo "::notice::${line}" ;;
+                esac
               done
               exit 0
             fi

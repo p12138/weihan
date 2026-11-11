@@ -5,4 +5,8 @@
     <color name="brand_deep">#0B3A36</color>
     <color name="brand_sand">#C89544</color>
     <color name="ic_launcher_background">#0B3A36</color>
+    <!-- 原生启动页底色：与 brand/splash-1080x1920.png 的上下边缘对齐，
+         让居中启动图和上下留白之间没有明显的色块接缝。 -->
+    <color name="splash_top">#14586B</color>
+    <color name="splash_bottom">#062538</color>
 </resources>

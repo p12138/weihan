@@ -68,8 +68,9 @@
 | `lib/theme.dart` | 四套主题配色 `BrandPalette` + 全局色板 `AppColors` + 组件默认样式、维文行距 |
 | `lib/palette_controller.dart` | 主题切换的唯一入口（改色板 → 通知 → 重建） |
 | `lib/palette_store.dart` | 主题选择的落盘（纯文本，不引入 shared_preferences） |
-| `lib/brand_mark.dart` | 应用内品牌标识，与桌面图标同一套几何比例 |
-| `scripts/make_icons.py` | 生成双端图标与启动图（numpy SDF 光栅化 + zlib 写 PNG，无第三方依赖） |
+| `lib/brand_mark.dart` | 应用内品牌标识，与桌面图标同源的交织双环 + 中心星芒（CustomPainter） |
+| `brand/` | 设计母版：`app-icon-1024.png`、`app-icon.svg`、`splash-1080x1920.png`（只作母版，不打包） |
+| `scripts/generate_brand_assets.py` | 纯标准库 PNG 读写 + Lanczos3，从母版生成双端 39 个图标 / 启动图资源；`--check` 供 CI 校验 |
 | `test/ui_brand_test.dart` | 视觉回归：标语、品牌标识、方向胶囊、按住说话的语音按钮 |
 | `test/theme_test.dart` | 主题系统回归：色板完整性、切换生效、设置页换色 |
 | `test/audio_level_test.dart` | 音量映射单测：满幅 / 静音 / 正常说话的区间与单调性 |
@@ -440,15 +441,24 @@ E2E UI 回归通过：录音启停 / 双气泡 / 自动朗读 / 朗读按钮
 - **配色**：四套可切换主题，见下面「主题配色系统」。默认是松石绿 `#17635C` +
   沙金 `#C89544` + 暖白 `#FBF8F3`。深色模式刻意不做 —— 自用工具多一套配色就是
   多一份维护成本。
-- **图标**：两枚叠放的对话气泡（白色=中文侧，沙金=维文侧），48px 下仍可辨认。
-  图标不是手绘 PNG，而是 `scripts/make_icons.py` 用 SDF 逐像素渲染出来的：
-  Android 自适应图标（前景/背景两层 + `mipmap-anydpi-v26`）、legacy 图标、
-  iOS 全尺寸 `AppIcon`（无 alpha，系统自己切圆角）、双端启动图，一次生成。
-  改配色只改脚本顶部的调色板，然后 `python scripts/make_icons.py` 重跑。
-- **启动页**：Android 用品牌色 `windowBackground` + 居中 logo，Android 12+ 另配
-  `windowSplashScreenBackground`/`AnimatedIcon`；iOS 改 `LaunchScreen.storyboard`
-  底色并替换 `LaunchImage`。**没有 Flutter 层的假启动页** —— 那种要卡一个定时器，
-  只会让冷启动更慢，还会把 widget 测试全打乱。
+- **图标**：深青渐变底 + 橙 / 青绿交织双环 + 中央四角星。矢量源在
+  `brand/app-icon.svg`，`app-icon-1024.png` 是 1024 方形母版。
+  `scripts/generate_brand_assets.py` 用纯标准库 PNG 读写 + Lanczos3 一次生成：
+  Android 自适应图标（透明底前景 + 渐变背景，图形严格锁在中心 66dp 安全区）、
+  legacy / round 图标、iOS 全尺寸 `AppIcon`（无 alpha，系统自己切圆角）。
+  应用内 `BrandMark` 用 CustomPainter 画同一套几何，顶栏与空状态和桌面图标是
+  同一个东西；颜色固定为品牌色，不随主题漂移。
+- **启动页**：`brand/splash-1080x1920.png` 先裁掉成图里的「假状态栏 9:41」和
+  Home 指示条（这两样由系统绘制，留着会出现两份），再按密度出图。Android 用
+  深青 `windowBackground` + 居中品牌主视觉，12+ 另配
+  `windowSplashScreenBackground`/`AnimatedIcon`；iOS `LaunchScreen.storyboard`
+  改成四边贴边 + `scaleAspectFill`，底色 `#062538`。为控制体积，Android 启动图
+  只留一份 `drawable-xxhdpi`，由系统按屏幕密度缩放。
+  **没有 Flutter 层的假启动页** —— 那种要卡一个定时器，只会让冷启动更慢，
+  还会把 widget 测试全打乱。
+- **改设计**：换掉 `brand/` 里的母版后跑 `python3 scripts/generate_brand_assets.py`，
+  再用 `--check` 校验 39 个资源齐全、尺寸正确、且没有旧密度的启动图残留；
+  CI 每轮自动跑 `--check`，资源丢了会直接判红。
 - **主界面**：渐变顶栏（品牌标识 + 名称 + 标语 + 调色板/设置）、**方向切换卡**
   （中文 / 维语两枚语言胶囊 + 中间交换键 + 一行通道状态）、空状态（92px 标识 +
   标语 + 三条操作提示）、双语气泡（自己的在右用渐变深底，对方在左用白卡描边）、

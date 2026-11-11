@@ -1,12 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 启动页：品牌深底 + 居中的两枚气泡。Flutter 画出第一帧后自动被替换。 -->
+<!-- 启动页：与 brand/splash-1080x1920.png 同色系的深青底 + 居中的品牌主视觉。
+     launch_logo 由 scripts/generate_brand_assets.py 从成图裁掉假状态栏 / Home 条后
+     按密度生成（360dp 宽），Flutter 画出第一帧后自动被替换。 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item>
         <shape android:shape="rectangle">
             <gradient
                 android:angle="270"
-                android:startColor="@color/brand_primary"
-                android:endColor="@color/brand_deep" />
+                android:startColor="@color/splash_top"
+                android:endColor="@color/splash_bottom" />
         </shape>
     </item>
     <item>

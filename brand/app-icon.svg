@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#15536A"/>
+      <stop offset="48%" stop-color="#0C4559"/>
+      <stop offset="100%" stop-color="#072A40"/>
+    </linearGradient>
+    <radialGradient id="centerGlow" cx="50%" cy="46%" r="58%">
+      <stop offset="0%" stop-color="#4BE0C6" stop-opacity="0.34"/>
+      <stop offset="60%" stop-color="#2AA8A8" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#2AA8A8" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="warmGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FF9A62" stop-opacity="0.30"/>
+      <stop offset="100%" stop-color="#FF9A62" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="gTeal" gradientUnits="userSpaceOnUse" x1="280" y1="300" x2="740" y2="740">
+      <stop offset="0%" stop-color="#C2FFEC"/>
+      <stop offset="38%" stop-color="#57DCC3"/>
+      <stop offset="100%" stop-color="#17979C"/>
+    </linearGradient>
+    <linearGradient id="gAmber" gradientUnits="userSpaceOnUse" x1="280" y1="740" x2="740" y2="300">
+      <stop offset="0%" stop-color="#FF8556"/>
+      <stop offset="45%" stop-color="#FFBB6C"/>
+      <stop offset="100%" stop-color="#FFE9B6"/>
+    </linearGradient>
+    <radialGradient id="coreGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FFF6D8" stop-opacity="0.95"/>
+      <stop offset="38%" stop-color="#FFD58A" stop-opacity="0.42"/>
+      <stop offset="100%" stop-color="#FFB877" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="topSheen" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.075"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <pattern id="weave" width="88" height="88" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <path d="M44 0 L88 44 L44 88 L0 44 Z" fill="none" stroke="#FFFFFF" stroke-opacity="0.055" stroke-width="1.4"/>
+      <path d="M44 24 L64 44 L44 64 L24 44 Z" fill="none" stroke="#FFD58A" stroke-opacity="0.05" stroke-width="1.2"/>
+      <circle cx="44" cy="44" r="2.2" fill="#A8FFE8" fill-opacity="0.10"/>
+    </pattern>
+    <filter id="ringShadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="16" stdDeviation="20" flood-color="#021A28" flood-opacity="0.48"/>
+    </filter>
+    <filter id="softBlur" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="34"/>
+    </filter>
+  </defs>
+
+  <!-- 底色 -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect width="1024" height="1024" fill="url(#centerGlow)"/>
+  <ellipse cx="812" cy="868" rx="430" ry="300" fill="url(#warmGlow)"/>
+  <rect width="1024" height="1024" fill="url(#weave)"/>
+  <rect width="1024" height="620" fill="url(#topSheen)"/>
+
+  <!-- 装饰细环 -->
+  <circle cx="512" cy="512" r="392" fill="none" stroke="#CFFFF0" stroke-opacity="0.10" stroke-width="2" stroke-dasharray="2 16"/>
+  <circle cx="512" cy="512" r="352" fill="none" stroke="#FFE9B6" stroke-opacity="0.06" stroke-width="1.5"/>
+
+  <!-- 中心融合光晕 -->
+  <circle cx="512" cy="512" r="168" fill="url(#coreGlow)" filter="url(#softBlur)" opacity="0.72"/>
+
+  <!-- 双环交织：青绿（冷） / 暖橙（暖） -->
+  <g filter="url(#ringShadow)" fill="none" stroke-linecap="round">
+    <ellipse cx="512" cy="512" rx="262" ry="150" transform="rotate(-42 512 512)"
+             stroke="url(#gTeal)" stroke-width="76"/>
+    <ellipse cx="512" cy="512" rx="262" ry="150" transform="rotate(42 512 512)"
+             stroke="url(#gAmber)" stroke-width="76"/>
+    <!-- 冷色环在上下两处交点压回暖色环之上：交替穿插，形成真正的编织 -->
+    <g transform="rotate(-42 512 512)" stroke="url(#gTeal)" stroke-width="76" stroke-linejoin="round" stroke-linecap="butt">
+      <path d="M 466.5 364.3 L 474.2 363.6 L 481.9 363.0 L 489.7 362.5 L 497.5 362.2 L 505.2 362.0 L 513.0 362.0 L 520.8 362.1 L 528.6 362.3 L 536.4 362.7 L 544.1 363.1 L 551.9 363.7 L 559.5 364.5 L 567.2 365.4 L 574.8 366.4 L 582.3 367.5 L 589.8 368.8 L 597.2 370.2 L 604.5 371.7 L 611.8 373.3 L 618.9 375.1 L 626.0 376.9 L 633.0 378.9 L 639.8 381.1 L 646.6 383.3 L 653.2 385.7 L 659.7 388.1 L 666.1 390.7 L 672.3 393.4 L 678.4 396.1 L 684.4 399.0 L 690.2 402.0 L 695.8 405.1 L 701.3 408.3 L 706.6 411.5 L 711.7 414.9 L 716.7 418.3 L 721.4 421.9 L 726.0 425.5 L 730.4 429.2 L 734.6 432.9 L 738.6 436.7 L 742.4 440.6 L 746.1 444.6 L 749.5 448.6"/>
+      <path d="M 502.9 661.9 L 497.7 661.8 L 492.5 661.6 L 487.3 661.3 L 482.1 661.0 L 477.0 660.7 L 471.8 660.2 L 466.7 659.7 L 461.6 659.2 L 456.5 658.6 L 451.4 657.9 L 446.4 657.2 L 441.4 656.4 L 436.4 655.6 L 431.4 654.7 L 426.5 653.8 L 421.6 652.8 L 416.8 651.7 L 411.9 650.6 L 407.1 649.5 L 402.4 648.2 L 397.7 647.0 L 393.1 645.7 L 388.4 644.3 L 383.9 642.8 L 379.4 641.4 L 374.9 639.8 L 370.5 638.3 L 366.2 636.6 L 361.9 634.9 L 357.7 633.2 L 353.5 631.4 L 349.4 629.6 L 345.3 627.7 L 341.4 625.8 L 337.5 623.9 L 333.6 621.9 L 329.9 619.8 L 326.2 617.7 L 322.5 615.6 L 319.0 613.4 L 315.5 611.2 L 312.1 609.0 L 308.8 606.7 L 305.5 604.3"/>
+    </g>
+  </g>
+
+  <!-- 交织处的四个织锦结点 -->
+  <g fill="#FFE9B6" opacity="0.85">
+    <path d="M512 316 l9 9 -9 9 -9 -9 Z" opacity="0.55"/>
+    <path d="M512 690 l9 9 -9 9 -9 -9 Z" opacity="0.55"/>
+    <path d="M306 512 l9 9 -9 9 -9 -9 Z" opacity="0.45"/>
+    <path d="M718 512 l9 9 -9 9 -9 -9 Z" opacity="0.45"/>
+  </g>
+
+  <!-- 融合光核 -->
+  <circle cx="512" cy="512" r="46" fill="url(#coreGlow)"/>
+  <path d="M512 466 C518 494 530 506 558 512 C530 518 518 530 512 558 C506 530 494 518 466 512 C494 506 506 494 512 466 Z"
+        fill="#FFF8E3"/>
+  <circle cx="512" cy="512" r="9" fill="#FFFFFF"/>
+</svg>
