@@ -265,9 +265,12 @@ jobs:
           if not apks:
               print('::error::没有找到构建产物 APK')
               raise SystemExit(1)
-          # release 会把 Dart 常量折叠掉，BUNDLED_SELFUSE 这个标识符名可能
-          # 在 AOT 产物里已经不存在；于是同时找设置页那条固定文案的 UTF-8 字节。
-          markers = [b'BUNDLED_SELFUSE', '凭证已内置于安装包'.encode('utf-8')]
+          # release 把 Dart 常量折叠掉，BUNDLED_SELFUSE 这个标识符名在 AOT 产物里
+          # 已经不存在；设置页那条固定文案还在，但 Dart 侧非 ASCII 字符串按
+          # UTF-16 存储，所以 UTF-8 与 UTF-16LE 两种编码都试一遍。
+          notice = '凭证已内置于安装包'
+          markers = [b'BUNDLED_SELFUSE', notice.encode('utf-8'),
+                     notice.encode('utf-16-le')]
           for path in apks:
               hit = []
               with zipfile.ZipFile(path) as zf:
@@ -285,8 +288,8 @@ jobs:
                   print('::notice::%s 已确认打入编译期配置（命中 %s，只查键名与固定文案）'
                         % (label, ', '.join(hit)))
               else:
-                  print('::warning::%s 内未搜索到编译期标记；Dart 侧注入自检已通过，'
-                        '通常只是 AOT 折叠差异' % label)
+                  print('::warning::%s 内未搜索到编译期标记；release 的 AOT 快照可能把'
+                        '常量与字符串都重编码了。以 Dart 侧注入自检为准。' % label)
           PY
 
       - name: 体积对比
