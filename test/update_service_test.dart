@@ -8,10 +8,8 @@ import 'package:uyghur_interpreter/update_manifest.dart';
 import 'package:uyghur_interpreter/update_service.dart';
 
 class _FakeGateway implements UpdateGateway {
-  _FakeGateway({this.bytes = const <int>[]});
-
   String body = '';
-  List<int> bytes;
+  List<int> bytes = const <int>[];
   Object? error;
   int downloads = 0;
   Uri? lastDownloadUri;
@@ -203,7 +201,7 @@ void main() {
     });
 
     test('网络异常不抛出，转成 failed', () async {
-      gateway.error = SocketException('Connection refused');
+      gateway.error = const SocketException('Connection refused');
       final UpdateCheck result =
           await buildService().check('https://a.example.com/weihan');
       expect(result.status, UpdateCheckStatus.failed);
@@ -260,11 +258,11 @@ void main() {
 
   test('describeUpdateError 保留原始信息', () {
     expect(
-      describeUpdateError(const TimeoutException('slow')),
+      describeUpdateError(TimeoutException('slow')),
       contains('超时'),
     );
     expect(
-      describeUpdateError(SocketException('refused')),
+      describeUpdateError(const SocketException('refused')),
       contains('连不上更新服务器'),
     );
     expect(
