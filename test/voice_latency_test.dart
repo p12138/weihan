@@ -59,7 +59,9 @@ void main() {
     await hold.up();
 
     // 不能用 pumpAndSettle：speak 被 Completer 挂住时会一直等不到收敛。
-    for (int i = 0; i < 6; i++) {
+    // 按条件 pump 到「合成已发起」为止，链路里 stopRecord / 微任务 / cancel /
+    // finish / translate 各有一次异步让出，固定次数容易不够。
+    for (int i = 0; i < 40 && speech.speaks == 0; i++) {
       await tester.pump(const Duration(milliseconds: 16));
     }
     expect(speech.speaks, 1, reason: '合成已经发起，但还没返回');
