@@ -105,7 +105,7 @@ class SplashView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return TweenAnimationBuilder<double>(
-      tween: const Tween<double>(begin: 0, end: 1),
+      tween: Tween<double>(begin: 0, end: 1),
       duration: const Duration(milliseconds: 280),
       curve: Curves.easeOut,
       // 一次性补间，不是 repeat()：widget 测试里的 pumpAndSettle 能收敛。
