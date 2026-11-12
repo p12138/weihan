@@ -233,20 +233,20 @@ class _ConversationPageState extends State<ConversationPage> {
 
     final SpeechPort speech = widget.speech;
     final AudioPort port = _audio();
-    // 拆成两个判断，Dart 的类型提升才一定生效。
-    if (speech is! LiveSpeechPort) {
+    if (speech is! LiveSpeechPort || port is! ChunkedAudioPort) {
       return;
     }
-    if (port is! ChunkedAudioPort) {
-      return;
-    }
+    // 显式转换，不依赖分析器的类型提升：CI 上 is! + return 没能提升成功，
+    // 报了 undefined_method / undefined_getter。
+    final LiveSpeechPort live = speech as LiveSpeechPort;
+    final ChunkedAudioPort chunked = port as ChunkedAudioPort;
     try {
-      _liveSession = speech.openLiveAsr(_state.direction.source);
+      _liveSession = live.openLiveAsr(_state.direction.source);
     } on Object catch (error) {
       debugPrint('边录边传未启用，改用录完再传：$error');
       return;
     }
-    _chunkSubscription = port.pcmChunks.listen(
+    _chunkSubscription = chunked.pcmChunks.listen(
       (Uint8List chunk) {
         final LiveAsrSession? session = _liveSession;
         if (session == null) {
