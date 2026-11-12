@@ -105,14 +105,9 @@ class SpeechPipeline {
     LiveAsrSession? session,
   ) async {
     if (session != null) {
-      try {
-        final String live = (await session.finish()).trim();
-        if (live.isNotEmpty) {
-          return live;
-        }
-      } on Object catch (_) {
-        // 不把失败原因写进 lastDiagnostic：老路会自己写更准确的诊断，
-        // 覆盖掉反而让界面提示变模糊。
+      final String live = await _tryLive(session);
+      if (live.isNotEmpty) {
+        return live;
       }
     }
     final String heard = (await speech.listen(audio, source)).trim();
@@ -120,5 +115,18 @@ class SpeechPipeline {
       throw const SpeechException('没有识别到语音，请靠近麦克风再试');
     }
     return heard;
+  }
+
+  /// 会话这条路走不通（连不上 / 云端报错 / 超时 / 一个字都没回）时统一返回
+  /// 空串，让调用方拿完整 PCM 重跑老路。
+  ///
+  /// 刻意不把失败原因写进 `lastDiagnostic`：老路会自己写更准确的诊断，
+  /// 覆盖掉反而让界面提示变模糊。
+  Future<String> _tryLive(LiveAsrSession session) async {
+    try {
+      return (await session.finish()).trim();
+    } on Object catch (_) {
+      return '';
+    }
   }
 }

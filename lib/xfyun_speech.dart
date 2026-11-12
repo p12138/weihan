@@ -95,6 +95,7 @@ Future<void> closeXfyunSocket(XfyunSocket socket) async {
         );
   } on Object catch (_) {
     // 连接已被对端关掉、或平台层抛错，都不影响这一轮的识别 / 合成结果。
+    return;
   }
 }
 
