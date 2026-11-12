@@ -89,6 +89,24 @@ void main() {
     );
   }
 
+  /// 让「真实文件 IO + 假时钟」一起往前走。
+  ///
+  /// 两个队列必须交替推进，缺一不可：
+  /// - `await` 的续体排在假时钟的微任务队列里，只有 `pump()` 才会冲掉；
+  /// - 读安装包用的是真实 `File.openRead()`，事件要真实事件循环才送达，
+  ///   只有 `runAsync` 才转得动。
+  ///
+  /// 之前「pump 一次 + runAsync 一次」的写法正是卡在这里：pump 冲完微任务后
+  /// 链子停在等 IO，runAsync 期间又没人冲微任务，于是永远走不到 install()。
+  Future<void> settleWithIo(WidgetTester tester, {int rounds = 24}) async {
+    for (int i = 0; i < rounds; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+      );
+    }
+  }
+
   /// 不用 pumpAndSettle：检查阶段有无限旋转的进度圈，settle 会一直等；
   /// 而下载涉及真实文件 IO，必须借 runAsync 让它跑完。
   Future<void> pumpDialog(
@@ -130,12 +148,7 @@ void main() {
     );
 
     await tester.tap(find.text('下载并安装'));
-    await tester.pump();
-    await tester.runAsync(
-      () => Future<void>.delayed(const Duration(milliseconds: 400)),
-    );
-    await tester.pump();
-    await tester.pump();
+    await settleWithIo(tester);
 
     expect(installer.installed, isNotNull);
     expect(installer.installed!.readAsBytesSync(), payload);
@@ -151,12 +164,7 @@ void main() {
 
     expect(find.textContaining('重签'), findsWidgets);
     await tester.tap(find.text('打开下载页'));
-    await tester.pump();
-    await tester.runAsync(
-      () => Future<void>.delayed(const Duration(milliseconds: 400)),
-    );
-    await tester.pump();
-    await tester.pump();
+    await settleWithIo(tester);
 
     expect(installer.opened, 'https://a.example.com/weihan/app.apk');
     expect(find.textContaining('已打开下载页'), findsOneWidget);
