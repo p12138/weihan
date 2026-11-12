@@ -271,7 +271,10 @@ class _ConversationPageState extends State<ConversationPage> {
     final StreamSubscription<Uint8List>? chunks = _chunkSubscription;
     _chunkSubscription = null;
     if (chunks != null) {
-      await chunks.cancel();
+      // 取消订阅立刻生效，不必等它的 Future：sync 广播流的 cancel() 在
+      // widget 测试和部分平台实现里迟迟不完成，会把后面的 session.cancel()
+      // 一起挂住，表现成「松手后既不识别也不取消」。
+      unawaited(chunks.cancel());
     }
     final LiveAsrSession? session = _liveSession;
     _liveSession = null;
@@ -396,7 +399,10 @@ class _ConversationPageState extends State<ConversationPage> {
       await Future<void>.delayed(Duration.zero);
       final StreamSubscription<Uint8List>? chunks = _chunkSubscription;
       _chunkSubscription = null;
-      await chunks?.cancel();
+      // 同上：只断开订阅，不等 cancel() 的 Future，否则 finish() 永远排不上。
+      if (chunks != null) {
+        unawaited(chunks.cancel());
+      }
       // 先把会话从字段上摘下来：pipeline 还在合成朗读时用户可能又按住说话，
       // 新一轮不该被这一轮的收尾误伤。
       final LiveAsrSession? session = _liveSession;
