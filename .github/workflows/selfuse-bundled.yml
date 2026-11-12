@@ -43,6 +43,7 @@ jobs:
     outputs:
       artifact: ${{ steps.decide.outputs.artifact }}
       draft: ${{ steps.decide.outputs.draft }}
+      testflight: ${{ steps.tf.outputs.enabled }}
     env:
       # 仅做存在性判断，不打印任何值。
       NIUTRANS_APP_ID: ${{ secrets.NIUTRANS_APP_ID }}
@@ -82,6 +83,25 @@ jobs:
             echo "artifact=false" >> "$GITHUB_OUTPUT"
             echo "draft=true" >> "$GITHUB_OUTPUT"
             echo "::warning::仓库为 public：不上传 Artifact（可被第三方代理匿名下载），含凭证 APK 以草稿 Release 发布，只有你登录 GitHub 后能下载。"
+          fi
+
+      - name: 判断是否具备 TestFlight 凭证
+        id: tf
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # 四个都齐才走 TestFlight：缺一个就会在 macOS 上白烧十几分钟再失败，
+          # 不如在这里判掉，退回「未签名 IPA」那条稳的路。
+          if [ -n "$ASC_KEY_ID" ] && [ -n "$ASC_ISSUER_ID" ] \
+              && [ -n "$ASC_PRIVATE_KEY" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::TestFlight 凭证齐全：本轮 iOS 构建将自动上传到 TestFlight"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::未配置 TestFlight 凭证（ASC_KEY_ID / ASC_ISSUER_ID / ASC_PRIVATE_KEY / APPLE_TEAM_ID），iOS 回退为未签名 IPA"
           fi
 
       - name: public 仓库时把历史公开包撤回为草稿
@@ -147,6 +167,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     env:
+      # 只用于「要不要推 NAS」的判断；值本身不会被打印。
+      NAS_HOST: ${{ secrets.NAS_HOST }}
       NIUTRANS_APP_ID: ${{ secrets.NIUTRANS_APP_ID }}
       NIUTRANS_API_KEY: ${{ secrets.NIUTRANS_API_KEY }}
       NIUTRANS_UG_CODE: ${{ vars.NIUTRANS_UG_CODE }}
@@ -180,6 +202,10 @@ jobs:
 
       - name: 生成编译期配置（只输出键名）
         run: python3 scripts/write_bundle_defines.py /tmp/weihan_bundle_defines.json
+
+      # 版本号是更新检查的比较基准，两处写岔会让 App 一直/永不提示更新。
+      - name: 版本号一致性
+        run: python3 scripts/check_version.py
 
       # 先证明 Dart 侧真的读到了注入值，并回归「设置页不回显 / 保存不清空」，
       # 再花几分钟做原生构建；避免构建完才发现注入链路有问题。
@@ -434,6 +460,42 @@ jobs:
 
           echo "::notice::已发布：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${ROLLING_TAG}/weihan-selfuse-arm64.apk"
 
+      # 更新清单只描述「文件叫什么、多大、SHA-256」，不带域名：
+      # App 用「更新源地址 + file」自己拼下载地址，换域名不用重出包。
+      - name: 生成 Android 更新清单
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          VERSION="$(python3 -c "import re; m=re.search(r'^version:\s*([0-9]+(?:\.[0-9]+)*)', open('pubspec.yaml',encoding='utf-8').read(), re.M); print(m.group(1) if m else '0.0.0')")"
+          python3 scripts/make_update_manifest.py \
+            --platform android \
+            --file build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
+            --name weihan-selfuse-arm64.apk \
+            --notes "融合 ${VERSION} · 构建 #${GITHUB_RUN_NUMBER}" \
+            --out dist/latest-android.json
+
+      - name: 推送到 NAS（配了 NAS_HOST 才执行）
+        if: env.NAS_HOST != ''
+        env:
+          NAS_PORT: ${{ secrets.NAS_PORT }}
+          NAS_USER: ${{ secrets.NAS_USER }}
+          NAS_SSH_KEY: ${{ secrets.NAS_SSH_KEY }}
+          NAS_UPDATE_DIR: ${{ secrets.NAS_UPDATE_DIR }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/nas_key"
+          umask 077
+          printf '%s' "$NAS_SSH_KEY" | tr -d '\r' > "$key"
+          chmod 600 "$key"
+          port="${NAS_PORT:-22}"
+          dir="${NAS_UPDATE_DIR:-/volume1/docker/weihan-update/data}"
+          scp -P "$port" -i "$key" -o StrictHostKeyChecking=accept-new \
+            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
+            dist/latest-android.json \
+            "$NAS_USER@$NAS_HOST:$dir/"
+          rm -f "$key"
+          echo "::notice::APK 与 latest-android.json 已推送到 NAS"
+
       - name: 公开仓库说明（只出草稿包）
         if: ${{ needs.guard.outputs.artifact != 'true' }}
         run: |
@@ -449,9 +511,14 @@ jobs:
     # 你用 Sideloadly / 爱思助手 / Xcode 自带证书重签后即可安装。
     # 等 APK 作业把 Release 建好再跑，避免两个作业抢同一个 Release。
     needs: [guard, bundled-apk]
+    # 配了 TestFlight 凭证就走官方分发，不再产出需要重签的 IPA；
+    # 没有凭证（或凭证不齐）时保留这条兜底路径。
+    if: ${{ needs.guard.outputs.testflight != 'true' }}
     runs-on: macos-15
     timeout-minutes: 50
     env:
+      # 只用于「要不要推 NAS」的判断；值本身不会被打印。
+      NAS_HOST: ${{ secrets.NAS_HOST }}
       NIUTRANS_APP_ID: ${{ secrets.NIUTRANS_APP_ID }}
       NIUTRANS_API_KEY: ${{ secrets.NIUTRANS_API_KEY }}
       NIUTRANS_UG_CODE: ${{ vars.NIUTRANS_UG_CODE }}
@@ -620,9 +687,206 @@ jobs:
             echo "SHA-256：\`${sha}\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: 生成 iOS 更新清单
+        run: |
+          set -euo pipefail
+          VERSION="$(python3 -c "import re; m=re.search(r'^version:\s*([0-9]+(?:\.[0-9]+)*)', open('pubspec.yaml',encoding='utf-8').read(), re.M); print(m.group(1) if m else '0.0.0')")"
+          python3 scripts/make_update_manifest.py \
+            --platform ios \
+            --file dist/weihan-selfuse-ios-unsigned.ipa \
+            --name weihan-selfuse-ios-unsigned.ipa \
+            --notes "融合 ${VERSION} · 构建 #${GITHUB_RUN_NUMBER}（未签名，需重签后安装）" \
+            --out dist/latest-ios.json
+
+      - name: 推送到 NAS（配了 NAS_HOST 才执行）
+        if: env.NAS_HOST != ''
+        env:
+          NAS_PORT: ${{ secrets.NAS_PORT }}
+          NAS_USER: ${{ secrets.NAS_USER }}
+          NAS_SSH_KEY: ${{ secrets.NAS_SSH_KEY }}
+          NAS_UPDATE_DIR: ${{ secrets.NAS_UPDATE_DIR }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/nas_key"
+          umask 077
+          printf '%s' "$NAS_SSH_KEY" | tr -d '\r' > "$key"
+          chmod 600 "$key"
+          port="${NAS_PORT:-22}"
+          dir="${NAS_UPDATE_DIR:-/volume1/docker/weihan-update/data}"
+          scp -P "$port" -i "$key" -o StrictHostKeyChecking=accept-new \
+            dist/weihan-selfuse-ios-unsigned.ipa \
+            dist/latest-ios.json \
+            "$NAS_USER@$NAS_HOST:$dir/"
+          rm -f "$key"
+          echo "::notice::IPA 与 latest-ios.json 已推送到 NAS"
+
       - name: 清理 runner 临时凭证文件
         if: always()
         run: rm -f /tmp/weihan_bundle_defines.json
+
+  testflight:
+    name: iOS TestFlight 自动上传
+    # 有付费开发者账号时的主路：构建直接进 TestFlight，手机上点「更新」即可，
+    # 不用重签、不用连电脑。签名走 App Store Connect API Key + 自动管理描述文件，
+    # 证书与 .p8 都只存在于 Secrets 和 runner 临时目录。
+    needs: [guard, bundled-apk]
+    if: ${{ needs.guard.outputs.testflight == 'true' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      NIUTRANS_APP_ID: ${{ secrets.NIUTRANS_APP_ID }}
+      NIUTRANS_API_KEY: ${{ secrets.NIUTRANS_API_KEY }}
+      NIUTRANS_UG_CODE: ${{ vars.NIUTRANS_UG_CODE }}
+      XFYUN_APP_ID: ${{ secrets.XFYUN_APP_ID }}
+      XFYUN_API_KEY: ${{ secrets.XFYUN_API_KEY }}
+      XFYUN_API_SECRET: ${{ secrets.XFYUN_API_SECRET }}
+      XFYUN_UG_VCN: ${{ secrets.XFYUN_UG_VCN }}
+      XFYUN_ZH_VCN: ${{ vars.XFYUN_ZH_VCN }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter 3.24.0
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.24.0"
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Generate native shells
+        run: bash scripts/bootstrap.sh
+
+      - name: Install CocoaPods dependencies
+        run: |
+          cd ios
+          test -f Podfile || { echo "::error::ios/Podfile 缺失"; exit 1; }
+          pod install --no-repo-update
+
+      # xcodebuild 默认从这个位置读 .p8；写到 umask 077 的目录，用完删掉。
+      # 只校验首行标记，绝不打印内容。
+      - name: 写入 App Store Connect API Key（不回显）
+        run: |
+          set -euo pipefail
+          key_dir="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$key_dir"
+          umask 077
+          printf '%s' "$ASC_PRIVATE_KEY" | tr -d '\r' \
+            > "$key_dir/AuthKey_${ASC_KEY_ID}.p8"
+          chmod 600 "$key_dir/AuthKey_${ASC_KEY_ID}.p8"
+          if ! grep -q 'BEGIN PRIVATE KEY' "$key_dir/AuthKey_${ASC_KEY_ID}.p8"; then
+            echo "::error::ASC_PRIVATE_KEY 不是完整的 .p8 内容（缺少 BEGIN PRIVATE KEY 行）"
+            exit 1
+          fi
+          echo "::notice::API Key 已写入 runner 临时目录，内容未输出"
+
+      - name: 生成编译期配置（只输出键名）
+        run: python3 scripts/write_bundle_defines.py /tmp/weihan_bundle_defines.json
+
+      # 只生成 xcconfig 与 Flutter 资产，不编译：编译交给下面的 xcodebuild，
+      # 这样签名参数（API Key、自动管理描述文件）才能完整传进去。
+      # build number 用 run_number，保证每次上传 TestFlight 都是新构建。
+      - name: 生成 Xcode 配置
+        run: |
+          flutter build ios --release --config-only \
+            --build-number="${{ github.run_number }}" \
+            --dart-define-from-file=/tmp/weihan_bundle_defines.json
+
+      - name: Build iOS archive（自动签名）
+        run: |
+          set -o pipefail
+          AUTH=(
+            "-allowProvisioningUpdates"
+            "-authenticationKeyPath" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+            "-authenticationKeyID" "$ASC_KEY_ID"
+            "-authenticationKeyIssuerID" "$ASC_ISSUER_ID"
+          )
+          if xcodebuild -workspace ios/Runner.xcworkspace -scheme Runner \
+              -configuration Release \
+              -archivePath build/ios/Runner.xcarchive \
+              -destination 'generic/platform=iOS' \
+              "${AUTH[@]}" \
+              DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+              CODE_SIGN_STYLE=Automatic \
+              CODE_SIGN_IDENTITY="Apple Distribution" \
+              archive 2>&1 | tee /tmp/ios_archive.log; then
+            echo "::notice::archive 成功"
+          else
+            python3 scripts/emit_build_error.py \
+              /tmp/ios_archive.log "iOS archive（自动签名）"
+            exit 1
+          fi
+
+      - name: 导出 App Store IPA
+        run: |
+          set -o pipefail
+          rm -rf build/ios/ipa
+          AUTH=(
+            "-allowProvisioningUpdates"
+            "-authenticationKeyPath" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+            "-authenticationKeyID" "$ASC_KEY_ID"
+            "-authenticationKeyIssuerID" "$ASC_ISSUER_ID"
+          )
+          if xcodebuild -exportArchive \
+              -archivePath build/ios/Runner.xcarchive \
+              -exportPath build/ios/ipa \
+              -exportOptionsPlist ios/ExportOptions-AppStore.plist \
+              "${AUTH[@]}" 2>&1 | tee /tmp/ios_export.log; then
+            ls -lh build/ios/ipa
+          else
+            python3 scripts/emit_build_error.py \
+              /tmp/ios_export.log "iOS 导出 App Store IPA"
+            exit 1
+          fi
+
+      - name: 上传到 TestFlight
+        run: |
+          set -o pipefail
+          IPA="$(find build/ios/ipa -maxdepth 1 -name '*.ipa' | head -n 1)"
+          if [ -z "$IPA" ]; then
+            echo "::error::导出目录里没有 .ipa"
+            exit 1
+          fi
+          if ! xcrun --find altool >/dev/null 2>&1; then
+            echo "::error::当前 Xcode 没有 altool，无法上传；请改用 fastlane pilot"
+            exit 1
+          fi
+          if xcrun altool --upload-app -f "$IPA" -t ios \
+              --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID" \
+              --output-format json 2>&1 | tee /tmp/testflight_upload.json; then
+            VERSION="$(python3 -c "import re,sys; m=re.search(r'^version:\s*([0-9.]+)', open('pubspec.yaml',encoding='utf-8').read(), re.M); print(m.group(1) if m else '0.0.0')")"
+            echo "::notice::已上传 TestFlight：${VERSION} (build ${{ github.run_number }})。处理完成后在手机上打开 TestFlight 点更新即可。"
+          else
+            echo "::error::TestFlight 上传失败，真实错误见下方"
+            tail -n 40 /tmp/testflight_upload.json | while IFS= read -r line; do
+              echo "::error::${line}"
+            done
+            exit 1
+          fi
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-testflight-log-${{ github.run_number }}
+          path: |
+            /tmp/ios_archive.log
+            /tmp/ios_export.log
+            /tmp/testflight_upload.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: 清理 runner 临时凭证文件
+        if: always()
+        run: |
+          rm -f "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          rm -f /tmp/weihan_bundle_defines.json
 
   summary:
     name: 出包说明

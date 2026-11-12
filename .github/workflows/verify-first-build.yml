@@ -66,6 +66,11 @@ jobs:
       - name: Brand assets check (icons / splash)
         run: python3 scripts/generate_brand_assets.py --check
 
+      # 版本号是更新检查的比较基准：pubspec 与 lib/app_version.dart 写岔了，
+      # App 会一直提示「有新版本」或永远提示不到，很难从现象反推。
+      - name: Version consistency check
+        run: python3 scripts/check_version.py
+
       - name: Install dependencies
         run: flutter pub get
 

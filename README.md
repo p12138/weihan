@@ -70,6 +70,13 @@
 | `lib/theme.dart` | 四套主题配色 `BrandPalette` + 全局色板 `AppColors` + 组件默认样式、维文行距 |
 | `lib/palette_controller.dart` | 主题切换的唯一入口（改色板 → 通知 → 重建） |
 | `lib/palette_store.dart` | 主题选择的落盘（纯文本，不引入 shared_preferences） |
+| `lib/app_version.dart` | 当前版本常量；与 `pubspec.yaml` 由 `check_version.py` 强制一致 |
+| `lib/update_manifest.dart` | 更新清单解析 + 版本比较（只比 `major.minor.patch`，不比构建号） |
+| `lib/update_service.dart` | 检查 → 下载 → SHA-256 校验 → 交给系统，网关与安装器都可注入 |
+| `lib/update_installer.dart` | 自写 `weihan/update` 通道（装包 / 打开链接），不引入 open_filex / url_launcher |
+| `lib/update_store.dart` | 更新源地址与上次检查时间的落盘（纯文本，同 `PaletteStore` 思路） |
+| `lib/update_notifier.dart` | 启动静默检查（一天最多一次）与「发现新版本」横幅状态 |
+| `lib/update_dialog.dart` | 更新对话框：版本对比、更新说明、下载进度、失败时的真实原因 |
 | `lib/brand_mark.dart` | 应用内品牌标识，与桌面图标同源的交织双环 + 中心星芒（CustomPainter） |
 | `brand/` | 设计母版：`app-icon-1024.png`、`app-icon.svg`、`splash-1080x1920.png`（只作母版，不打包） |
 | `scripts/generate_brand_assets.py` | 纯标准库 PNG 读写 + Lanczos3，从母版生成双端 35 个图标资源；`--check` 供 CI 校验，并守住启动层不回落缩略位图 |
@@ -86,6 +93,9 @@
 | `test/voice_latency_test.dart` | 页面级低延迟回归：录音期即上传、会话空结果自动重传、取消丢弃会话 |
 | `test/live_asr_session_test.dart` | 边录边传协议单测：帧序列 / 40ms 实时率 / 取消不补结束帧 / 连接失败回退 / 400ms 收尾 |
 | `test/splash_page_test.dart` | 启动页停留时长、「到点才进对话页」、全屏无缩放淡入回归 |
+| `test/update_manifest_test.dart` | 清单解析 / 版本比较 / schema、sha256、路径穿越等畸形输入拒绝 |
+| `test/update_service_test.dart` | 检查三种结果、下载校验失败即删文件、错误文案保留原始信息 |
+| `test/update_dialog_test.dart` | 对话框显示版本与说明、Android 交安装器、iOS 打开下载页、无新版提示 |
 | `test/niutrans_translator_test.dart` | 16 个单测：小牛签名、请求体、语种码、重试、降级（假网关） |
 | `test/azure_translator_test.dart` | 9 个单测：Azure 请求头、语言映射、区域、降级（假网关） |
 | `test/settings_test.dart` | 2 个 widget 测试：填入 / 清空凭证后模式条切换 |
@@ -102,6 +112,9 @@
 | `scripts/device_smoke_android.sh` | adb 装包 / 启动 / 崩溃检查 / 截图 |
 | `scripts/device_smoke_ios.sh` | simctl 装包 / 启动 / 崩溃检查 / 截图 |
 | `scripts/verify_project.py` | 纯标准库静态自检，无需 Flutter SDK |
+| `scripts/make_update_manifest.py` | 生成 `latest-android.json` / `latest-ios.json`（体积 + SHA-256） |
+| `scripts/check_version.py` | 校验 `pubspec.yaml` 与 `lib/app_version.dart` 版本一致 |
+| `deploy/nas/` | NAS 分发：nginx compose、清单缓存策略、Lucky 反代步骤 |
 | `scripts/bootstrap.sh` | 幂等生成 `android/` `ios/` 原生壳，补录音权限与 iOS 用途说明 |
 | `scripts/push_to_github.sh` | 推送；Token 只从环境变量读，不落盘、不留 `.git/config` |
 | `scripts/make_keystore.sh` | 本机生成自用 keystore |
@@ -673,4 +686,107 @@ CI 会先跑 `test/bundled_config_test.dart`（带同一份 define 文件）确�
 3. 建议：仓库转 private、产物只留 3 天、包只装在自己设备、不要备份到公有网盘；
    一旦发现泄露，去讯飞与小牛控制台**重置 APIKey / APISecret**，再更新同名 Secrets 重跑即可。
 4. 想同时做到「完全免手填」和「凭证不进包」，只有第 7 节的 **NAS 代理**路线：
-   把 APISecret 放 NAS 环境变量，App 内置代理地址（地址不是密钥），由代理签名转发。
+   把 APISecret 放 NAS 环境变量、App 内置代理地址（地址不是密钥），由代理签名转发。
+
+---
+
+## 9. 应用内更新（NAS 分发 + TestFlight）
+
+### 9.1 三条通道，按平台各取所需
+
+| 平台 | 通道 | 用户要做的 | 需要重签吗 |
+|---|---|---|---|
+| Android | App 内查 NAS → 下载 APK → 系统安装器覆盖安装 | 点「下载并安装」→ 允许安装未知应用 | 否 |
+| iOS（有付费开发者账号） | **TestFlight** | 在 TestFlight App 里点「更新」 | 否 |
+| iOS（没有 TestFlight 凭证） | App 内提示 → 打开 NAS 下载页 | 自己用 Sideloadly / Xcode 重签 | 是 |
+
+iOS 不允许应用自装包，所以 TestFlight 是唯一「点一下就能更新」的官方路径。
+Android 的整包更新则完全不依赖 Apple，也不依赖 GitHub。
+
+### 9.2 NAS 清单（Android 主用，iOS 兜底）
+
+部署与 Lucky 反代步骤见 [`deploy/nas/README.md`](deploy/nas/README.md)。
+
+App 只做一件事：`GET <更新源>/latest-android.json`（iOS 是 `latest-ios.json`）。
+清单由 `scripts/make_update_manifest.py` 从真实安装包生成：
+
+```json
+{
+  "schema": 1,
+  "platform": "android",
+  "version": "0.5.0",
+  "build": 1,
+  "notes": "本次更新内容",
+  "file": "weihan-selfuse-arm64.apk",
+  "size": 21000000,
+  "sha256": "……64 位十六进制……",
+  "requiresResign": false,
+  "publishedAt": "2026-11-13T00:30:00Z"
+}
+```
+
+几个刻意的决定：
+
+- **清单里不写域名**：App 用「更新源地址 + `file`」自己拼下载地址，
+  以后换域名、换端口、搬到别的机器都不用重出包。
+- **下载后必须校验 SHA-256**，不匹配就删掉文件并报错——宁可重下，
+  也不能把半截包递给安装器。
+- **只比 `major.minor.patch`，不比构建号**：TestFlight 每次上传都要换新的
+  build number（Apple 硬性要求），把它算进比较会让同一版本反复提示更新。
+- **启动静默检查一天最多一次**，失败完全不打扰；设置页有「检查更新」可手动触发。
+- 下载目录只保留当前这一个包，装完/失败都不会把缓存越攒越大。
+
+CI 里配了 `NAS_HOST` / `NAS_PORT` / `NAS_USER` / `NAS_SSH_KEY` / `NAS_UPDATE_DIR`
+五个 Secrets 后，出包会自动把 APK/IPA 与清单推上去；缺任何一个就跳过推送，
+不影响出包本身。
+
+### 9.3 iOS：TestFlight 自动上传
+
+前提：付费 Apple Developer Program（已具备）+ App Store Connect 里已创建 App。
+
+需要四个 Secrets：
+
+| Secret | 从哪里拿 |
+|---|---|
+| `APPLE_TEAM_ID` | developer.apple.com → Membership → Team ID（10 位） |
+| `ASC_KEY_ID` | App Store Connect → Users and Access → Integrations → App Store Connect API → 生成密钥 |
+| `ASC_ISSUER_ID` | 同一页面上方的 Issuer ID |
+| `ASC_PRIVATE_KEY` | 下载到的 `.p8` **全文**（含 `BEGIN/END PRIVATE KEY` 两行） |
+
+四个齐全后，`selfuse-bundled-build` 的 `testflight` 作业会：
+
+1. `flutter build ios --config-only --build-number=<run 号>`（只生成配置，不编译）；
+2. `xcodebuild archive`，带 `-allowProvisioningUpdates` 与 API Key，
+   由 Xcode 自动创建/续期分发证书与描述文件；
+3. `xcodebuild -exportArchive` 出 App Store IPA；
+4. `xcrun altool --upload-app` 上传到 TestFlight。
+
+版本号取 `pubspec.yaml`，构建号取 `GITHUB_RUN_NUMBER`（Apple 要求每次唯一）。
+缺少任一 Secret 时，这个作业整体跳过，自动回退到「未签名 IPA」那条路。
+
+首次还需要在 App Store Connect 手动做两件事（只能人工点）：
+
+1. **创建 App**：Bundle ID 选 `com.selfuse.uyghur.weihan`，名称填「融合」；
+2. **TestFlight → 测试信息**：填一次联系邮箱（之后不再问）。
+
+之后每次 push：等 TestFlight 处理完（通常几分钟），手机上打开 TestFlight 点更新。
+
+### 9.4 安全边界
+
+- TestFlight 构建同样含内置凭证，但只分发给「内部测试员」（你自己），不公开；
+- NAS 上只有安装包与清单，**没有任何密钥**；凭证在包里，不在服务端；
+- 清单响应带 `Cache-Control: no-store`，避免发了新版却查到旧清单；
+- 公开仓库的草稿 Release 机制不变，匿名访客仍然看不到任何含凭证的包。
+
+### 9.5 手动发一次
+
+```bash
+python3 scripts/make_update_manifest.py --platform android \
+  --file weihan-selfuse-arm64.apk --name weihan-selfuse-arm64.apk \
+  --notes "更新内容" --out latest-android.json
+scp weihan-selfuse-arm64.apk latest-android.json nas:/volume1/docker/weihan-update/data/
+```
+
+发版前记得 **同时** 改 `pubspec.yaml` 的 `version:` 与 `lib/app_version.dart` 的
+`kAppVersion`——CI 的 `check_version.py` 会拦下不一致，因为版本号是更新检查的
+比较基准，写岔了表现为「一直提示更新」或「永远查不到新版」。

@@ -16,6 +16,10 @@ import 'speech_config.dart';
 import 'speech_pipeline.dart';
 import 'theme.dart';
 import 'translation_config.dart';
+import 'update_dialog.dart';
+import 'update_manifest.dart';
+import 'update_notifier.dart';
+import 'update_store.dart';
 
 /// 向上滑过这么多逻辑像素就进「松开取消」区。公开常量，测试不用写魔法数。
 const double kCancelDragDistance = 96;
@@ -558,6 +562,20 @@ class _ConversationPageState extends State<ConversationPage> {
     });
   }
 
+  /// 从横幅进入更新：清单已经在后台查过，直接带着它打开对话框，不再请求一次。
+  Future<void> _openUpdate() async {
+    final UpdateManifest? manifest = UpdateNotifier.instance.available;
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext context) => UpdateDialog(manifest: manifest),
+    );
+    if (!mounted) {
+      return;
+    }
+    // 装完/关掉后清掉横幅：新版本是否真的生效由下次启动时的版本号说了算。
+    UpdateNotifier.instance.dismiss();
+  }
+
   @override
   Widget build(BuildContext context) {
     final TranslationDirection direction = _state.direction;
@@ -575,6 +593,7 @@ class _ConversationPageState extends State<ConversationPage> {
                 onSettings: _openSettings,
                 onTheme: _cyclePalette,
               ),
+              _UpdateBanner(onOpen: _openUpdate),
               _DirectionCard(
                 direction: direction,
                 speechAvailable: speechReady,
@@ -1912,6 +1931,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
   late final TextEditingController _xfUgVcnController;
   late final TextEditingController _xfZhVcnController;
   late final TextEditingController _xfEndpointController;
+  late final TextEditingController _updateBaseController;
   late TranslationProvider _provider;
 
   @override
@@ -1939,6 +1959,9 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     _xfZhVcnController = TextEditingController(text: speechConfig.zhVcn);
     _xfEndpointController =
         TextEditingController(text: speechConfig.endpoint);
+    // 更新源不是密钥，可以落盘：下次冷启动不用再填一遍。
+    _updateBaseController =
+        TextEditingController(text: UpdateStore.readBaseUrl());
   }
 
   void _onPaletteChanged() {
@@ -1960,6 +1983,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     _xfUgVcnController.dispose();
     _xfZhVcnController.dispose();
     _xfEndpointController.dispose();
+    _updateBaseController.dispose();
     super.dispose();
   }
 
@@ -1989,7 +2013,19 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     speechConfig.ugVcn = _xfUgVcnController.text.trim();
     speechConfig.zhVcn = _xfZhVcnController.text.trim();
     speechConfig.endpoint = _xfEndpointController.text.trim();
+    // 更新源不是密钥，落盘保存；留空表示回到构建期内置的地址。
+    UpdateStore.writeBaseUrl(_updateBaseController.text);
     Navigator.of(context).pop();
+  }
+
+  /// 设置页里的「检查更新」：先把输入框里的地址落盘，再打开对话框，
+  /// 避免用户改了地址却没点保存、结果查到的是旧地址。
+  Future<void> _openUpdateDialog() async {
+    UpdateStore.writeBaseUrl(_updateBaseController.text);
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext context) => const UpdateDialog(),
+    );
   }
 
   @override
@@ -2191,6 +2227,33 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                       decoration: const InputDecoration(
                         labelText: '语音代理 wss 地址（可留空）',
                         hintText: '自建 NAS 代理时填 wss://...',
+                      ),
+                    ),
+                    const SizedBox(height: 22),
+                    const _SectionTitle(
+                      icon: Icons.system_update_alt,
+                      label: '软件更新',
+                      note: '从自己的 NAS 拉新版本',
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      key: const ValueKey<String>('update-base-field'),
+                      controller: _updateBaseController,
+                      style: const TextStyle(fontSize: 14.5),
+                      keyboardType: TextInputType.url,
+                      decoration: const InputDecoration(
+                        labelText: '更新源地址（留空用内置）',
+                        hintText: 'https://weihan.example.com/weihan',
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: OutlinedButton.icon(
+                        key: const ValueKey<String>('update-check-button'),
+                        onPressed: _openUpdateDialog,
+                        icon: const Icon(Icons.refresh, size: 18),
+                        label: const Text('检查更新'),
                       ),
                     ),
                     const SizedBox(height: 22),
@@ -2438,6 +2501,78 @@ class _ProviderField extends StatelessWidget {
           onChanged: onChanged,
         ),
       ),
+    );
+  }
+}
+
+/// 后台静默检查到新版本时，在顶栏下方显示一条窄横幅。
+///
+/// 没有更新时返回零高度：不占位、不影响既有布局，也不会让 widget 测试里
+/// 多出一个可点击元素。
+class _UpdateBanner extends StatelessWidget {
+  const _UpdateBanner({required this.onOpen});
+
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: UpdateNotifier.instance,
+      builder: (BuildContext context, Widget? child) {
+        final UpdateManifest? manifest = UpdateNotifier.instance.available;
+        if (manifest == null) {
+          return const SizedBox.shrink();
+        }
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(14, 0, 14, 10),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              key: const ValueKey<String>('update-banner'),
+              onTap: onOpen,
+              borderRadius: BorderRadius.circular(14),
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(12, 9, 4, 9),
+                decoration: BoxDecoration(
+                  color: AppColors.primarySoft,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: AppColors.primary.withOpacity(0.28),
+                  ),
+                ),
+                child: Row(
+                  children: <Widget>[
+                    Icon(
+                      Icons.system_update_alt,
+                      size: 18,
+                      color: AppColors.primary,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '发现新版本 ${manifest.version}'
+                        '（${manifest.sizeLabel}）· 点这里更新',
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.primaryDeep,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '以后再说',
+                      visualDensity: VisualDensity.compact,
+                      onPressed: UpdateNotifier.instance.dismiss,
+                      icon: const Icon(Icons.close, size: 16),
+                      color: AppColors.inkMuted,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }

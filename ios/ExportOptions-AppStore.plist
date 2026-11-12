@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App Store Connect / TestFlight 分发。
+	     签名走 Automatic + App Store Connect API Key：CI 里用
+	     `xcodebuild -allowProvisioningUpdates -authenticationKeyPath ...`，
+	     不需要把 .p12 证书和描述文件塞进仓库。
+	     这里不写 teamID 与 provisioningProfiles：自动签名会从 archive 里
+	     继承开发团队；写死反而会在换团队时静默失败。 -->
+	<key>method</key>
+	<string>app-store</string>
+	<key>destination</key>
+	<string>export</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>uploadSymbols</key>
+	<true/>
+	<key>stripSwiftSymbols</key>
+	<true/>
+	<key>compileBitcode</key>
+	<false/>
+	<key>thinning</key>
+	<string>&lt;none&gt;</string>
+</dict>
+</plist>

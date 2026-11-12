@@ -7,6 +7,7 @@ import 'device_audio.dart';
 import 'palette_controller.dart';
 import 'splash_page.dart';
 import 'theme.dart';
+import 'update_notifier.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -16,7 +17,12 @@ void main() {
     showSplash: true,
     // 启动页读完再弹麦克风授权框：系统弹窗不会盖住要看的品牌文字。
     // 权限依然是「提前问」，只是提前到用户准备开始说话之前，不是按住那一刻。
-    onSplashFinished: () => unawaited(primeMicrophonePermission()),
+    onSplashFinished: () {
+      unawaited(primeMicrophonePermission());
+      // 静默检查更新：一天最多一次，失败不打扰（出门没网是常态）。
+      // 放在启动页之后，不与首屏渲染和权限弹窗抢时间。
+      unawaited(UpdateNotifier.instance.checkInBackground());
+    },
   ));
 }
 
