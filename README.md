@@ -83,7 +83,7 @@
 | `test/conversation_test.dart` | 领域模型 / 降级链 / 演示词库单测 |
 | `test/conversation_page_test.dart` | widget 交互测试，把「中文→维文」等真机验证过的行为固化成断言 |
 | `test/voice_cancel_test.dart` | 上滑取消回归：取消不跑云端三环、滑回来照常翻译、横滑不误触 |
-| `test/voice_latency_test.dart` | 低延迟回归：录音期即上传、译文先于朗读上屏、会话空结果自动重传、取消丢弃会话 |
+| `test/voice_latency_test.dart` | 页面级低延迟回归：录音期即上传、会话空结果自动重传、取消丢弃会话 |
 | `test/live_asr_session_test.dart` | 边录边传协议单测：帧序列 / 40ms 实时率 / 取消不补结束帧 / 连接失败回退 / 400ms 收尾 |
 | `test/splash_page_test.dart` | 启动页停留时长、「到点才进对话页」、全屏无缩放淡入回归 |
 | `test/niutrans_translator_test.dart` | 16 个单测：小牛签名、请求体、语种码、重试、降级（假网关） |
@@ -91,7 +91,7 @@
 | `test/settings_test.dart` | 2 个 widget 测试：填入 / 清空凭证后模式条切换 |
 | `test/translation_http_test.dart` | 本机 HttpServer 回归中文请求体（修 latin1 问题） |
 | `test/xfyun_speech_test.dart` | 14 个语音协议单测：官方 HMAC 示例对齐、帧结构、解析、假 socket 闭环，不发网络 |
-| `test/speech_pipeline_test.dart` | 4 个三环编排单测 |
+| `test/speech_pipeline_test.dart` | 8 个三环编排单测（含低延迟回调顺序：译文在合成发起之前就交给页面） |
 | `test/live_niutrans_test.dart` | 真实凭证跑 App 的小牛 Dart 实现（无 Secret 自动跳过） |
 | `test/live_xfyun_test.dart` | 真实凭证跑 TTS→ASR 闭环（无 Secret 自动跳过） |
 | `analysis_options.yaml` / `.gitignore` | lint 规则；已排除 `*.jks` / `key.properties` / `*.p12` / `*.mobileprovision` |

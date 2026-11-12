@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:uyghur_interpreter/conversation.dart';
+import 'package:uyghur_interpreter/live_asr.dart';
 import 'package:uyghur_interpreter/speech_pipeline.dart';
 import 'package:uyghur_interpreter/xfyun_speech.dart' show SpeechException;
 
@@ -155,6 +156,55 @@ void main() {
     expect(turn.hasAudio, isFalse);
     expect(turn.speakError, isNotNull);
   });
+
+  // 「译文先上屏」用纯 Dart 顺序单测钉住：不依赖 widget 测试的 fake async，
+  // 也不需要挂一个永不完成的 Completer 去卡住合成。
+  test('低延迟回调：译文在合成发起之前就交给页面', () async {
+    final List<String> events = <String>[];
+    final _OrderSpeech speech = _OrderSpeech(events);
+    final SpeechPipeline pipeline = SpeechPipeline(
+      speech: speech,
+      translator: _OrderTranslator(events),
+    );
+    final SpeechTurn turn = await pipeline.run(
+      Uint8List.fromList(<int>[0, 1]),
+      TranslationDirection.zhToUg,
+      session: _OrderSession(events, '你好'),
+      onHeard: (String heard) => events.add('heard:$heard'),
+      onText: (String heard, Translation translation) =>
+          events.add('text:${translation.text}'),
+    );
+
+    expect(events, <String>[
+      'finish',
+      'heard:你好',
+      'translate',
+      'text:ئەسسالامۇ ئەلەيكۇم',
+      'speak',
+    ], reason: '页面在 onText 就上屏，合成与朗读发生在它之后');
+    expect(speech.listens, 0, reason: '边录边传成功时不整段重传');
+    expect(turn.hasAudio, isTrue);
+  });
+
+  test('会话空识别时自动整段重传，仍按同一顺序回调', () async {
+    final List<String> events = <String>[];
+    final _OrderSpeech speech = _OrderSpeech(events);
+    final SpeechPipeline pipeline = SpeechPipeline(
+      speech: speech,
+      translator: _OrderTranslator(events),
+    );
+    await pipeline.run(
+      Uint8List.fromList(<int>[0]),
+      TranslationDirection.zhToUg,
+      session: _OrderSession(events, ''),
+      onHeard: (String heard) => events.add('heard:$heard'),
+    );
+
+    expect(speech.listens, 1);
+    expect(events.first, 'finish');
+    expect(events, contains('listen'));
+    expect(events, contains('heard:老路识别'));
+  });
 }
 
 /// 合成必败的端口，模拟「维语发音人没开通」。
@@ -172,4 +222,72 @@ class _EmptyAudioSpeech extends _FakeSpeech {
   @override
   Future<Uint8List> speak(String text, Language language) async =>
       Uint8List(0);
+}
+
+/// 按调用顺序记事件的会话。
+class _OrderSession implements LiveAsrSession {
+  _OrderSession(this.events, this.result);
+
+  final List<String> events;
+  final String result;
+
+  @override
+  void add(Uint8List pcm) {
+    events.add('add');
+  }
+
+  @override
+  Future<String> finish() async {
+    events.add('finish');
+    return result;
+  }
+
+  @override
+  Future<void> cancel() async {
+    events.add('cancel');
+  }
+}
+
+class _OrderSpeech extends SpeechPort {
+  _OrderSpeech(this.events);
+
+  final List<String> events;
+  int listens = 0;
+
+  @override
+  bool get isAvailable => true;
+
+  @override
+  Future<String> listen(Uint8List audio, Language language) async {
+    listens += 1;
+    events.add('listen');
+    return '老路识别';
+  }
+
+  @override
+  Future<Uint8List> speak(String text, Language language) async {
+    events.add('speak');
+    return Uint8List.fromList(<int>[1, 2, 3]);
+  }
+}
+
+class _OrderTranslator extends Translator {
+  _OrderTranslator(this.events);
+
+  final List<String> events;
+
+  @override
+  Future<Translation> translate(
+    String text,
+    Language from,
+    Language to,
+  ) async {
+    events.add('translate');
+    return const Translation(
+      text: 'ئەسسالامۇ ئەلەيكۇم',
+      provider: '顺序测试',
+      found: true,
+      isDemo: false,
+    );
+  }
 }
