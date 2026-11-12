@@ -30,17 +30,15 @@ class UpdateCheck {
 
   const UpdateCheck.available({
     required this.currentVersion,
-    required UpdateManifest manifest,
+    required this.manifest,
   })  : status = UpdateCheckStatus.available,
-        manifest = manifest,
         error = null;
 
   const UpdateCheck.failed({
     required this.currentVersion,
-    required String error,
+    required this.error,
   })  : status = UpdateCheckStatus.failed,
-        manifest = null,
-        error = error;
+        manifest = null;
 
   final UpdateCheckStatus status;
   final String currentVersion;

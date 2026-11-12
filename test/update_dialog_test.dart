@@ -4,14 +4,15 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:uyghur_interpreter/update_dialog.dart';
+import 'package:uyghur_interpreter/update_installer.dart';
 import 'package:uyghur_interpreter/update_manifest.dart';
 import 'package:uyghur_interpreter/update_service.dart';
 import 'package:uyghur_interpreter/update_store.dart';
 
 class _FakeGateway implements UpdateGateway {
-  _FakeGateway({this.body = '', this.bytes = const <int>[]});
+  _FakeGateway({this.bytes = const <int>[]});
 
-  String body;
+  String body = '';
   List<int> bytes;
 
   @override
