@@ -7,6 +7,30 @@
 
 set -euo pipefail
 
+# macOS 没有 coreutils 的 `timeout`，而 `xcrun simctl bootstatus -b` 在模拟器
+# 起不来时会一直等下去，能把整个 job 拖到 GitHub 的 6 小时上限。自己带个看门狗：
+# 超时先 TERM 再 KILL，返回命令自己的退出码（被 KILL 时是 143）。
+# 注意不能用 `$!` + `kill -0` 轮询判断存活——子进程已退出但未 wait 时是僵尸，
+# `kill -0` 仍然成功，会误判成超时；只能直接 wait 真正的 pid。
+run_with_timeout() {
+  local limit="$1"
+  shift
+  "$@" &
+  local pid=$!
+  (
+    sleep "$limit"
+    kill -TERM "$pid" 2>/dev/null || true
+    sleep 2
+    kill -KILL "$pid" 2>/dev/null || true
+  ) &
+  local watchdog=$!
+  local rc=0
+  wait "$pid" || rc=$?
+  kill -TERM "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+  return "$rc"
+}
+
 BUNDLE="com.selfuse.uyghur.weihan"
 APP="$(find build/ios/iphonesimulator -maxdepth 1 -name '*.app' -type d | head -n 1)"
 if [ -z "$APP" ]; then
@@ -35,7 +59,11 @@ fi
 echo "[smoke] Simulator=$UDID"
 
 xcrun simctl boot "$UDID" 2>/dev/null || true
-xcrun simctl bootstatus "$UDID" -b
+# 首次启动新 runtime 可能要 1-2 分钟；给 240 秒上限，超时也不直接判红：
+# 后面的 install 会给出真正的失败原因，比一句「等待超时」好排查。
+if ! run_with_timeout 240 xcrun simctl bootstatus "$UDID" -b; then
+  echo "::warning::bootstatus 未在 240s 内完成，继续尝试安装（失败时会报出真实原因）"
+fi
 
 DIAG="$HOME/Library/Logs/CoreSimulator/$UDID/Diagnostics"
 mkdir -p "$DIAG" 2>/dev/null || true
@@ -44,8 +72,15 @@ crash_count() {
 }
 BEFORE="$(crash_count)"
 
-xcrun simctl install "$UDID" "$APP"
-LAUNCH="$(xcrun simctl launch "$UDID" "$BUNDLE")"
+if ! run_with_timeout 180 xcrun simctl install "$UDID" "$APP"; then
+  echo "::error::安装失败（或 180s 超时）：模拟器可能没真正启动起来"
+  xcrun simctl list devices | grep -F "$UDID" || true
+  exit 1
+fi
+LAUNCH="$(run_with_timeout 120 xcrun simctl launch "$UDID" "$BUNDLE")" || {
+  echo "::error::启动失败（或 120s 超时）"
+  exit 1
+}
 echo "[smoke] $LAUNCH"
 sleep 8
 
@@ -62,7 +97,17 @@ if [ ! -s dist/smoke-ios.png ]; then
   echo "::error::截图为空，模拟器可能未正常渲染"
   exit 1
 fi
-if ! xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | grep -qF "$BUNDLE"; then
+# 进程标签出现的时机依 Xcode 版本而异，给 3 次、每次间隔 2 秒的重试上限，
+# 仍然查不到只当作提示（不同 Xcode 行为不同，不该据此判红）。
+launch_visible=0
+for _ in 1 2 3; do
+  if xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | grep -qF "$BUNDLE"; then
+    launch_visible=1
+    break
+  fi
+  sleep 2
+done
+if [ "$launch_visible" -ne 1 ]; then
   echo "::warning::launchctl 中未查到应用服务标签（部分 Xcode 版本行为不同），截图与崩溃报告仍已校验"
 fi
 xcrun simctl terminate "$UDID" "$BUNDLE" 2>/dev/null || true
