@@ -61,8 +61,8 @@ jobs:
       - name: Static self-check (structure / deps / secrets)
         run: python3 scripts/verify_project.py --scope all
 
-      # 图标 / 启动页由脚本从 brand/ 母版生成：文件缺失、尺寸错、或其它密度
-      # 残留旧启动图（会被系统优先选中盖住新设计）都要在这里判红。
+      # 图标由脚本从 brand/ 母版生成；同时守住「冷启动不再出现缩小版启动页」：
+      # 旧位图文件、原生层对它的引用、Android 12+ 的系统小图标都要在这里判红。
       - name: Brand assets check (icons / splash)
         run: python3 scripts/generate_brand_assets.py --check
 

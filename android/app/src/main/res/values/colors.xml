@@ -9,4 +9,7 @@
          让居中启动图和上下留白之间没有明显的色块接缝。 -->
     <color name="splash_top">#14586B</color>
     <color name="splash_bottom">#062538</color>
+    <!-- Android 12+ 系统 SplashScreen 只吃纯色，取渐变中点，切到
+         windowBackground 的渐变时不会有明显亮度跳变。 -->
+    <color name="splash_mid">#0D3E52</color>
 </resources>

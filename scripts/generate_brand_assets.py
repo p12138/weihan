@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
-"""从 brand/ 的母版生成 Android / iOS 全平台图标与启动页资源。
+"""从 brand/ 的母版生成 Android / iOS 全平台图标资源（启动页不再出位图）。
 
 只用 Python 标准库：本机没有 Pillow（也装不上），CI runner 不该为了裁几张图
 多装一个依赖。这里自带 8-bit PNG 读写 + separable Lanczos3 重采样。
 
-    python3 scripts/generate_brand_assets.py            # 生成全部资源
-    python3 scripts/generate_brand_assets.py --check    # 只校验产物齐全、尺寸正确
+    python3 scripts/generate_brand_assets.py            # 生成全部图标
+    python3 scripts/generate_brand_assets.py --check    # 校验图标 + 启动层无缩略位图
 
 设计源文件（只作母版，不会被打进 APK —— pubspec.yaml 未声明 assets）：
     brand/app-icon-1024.png      图标母版，1024 方形不透明
-    brand/splash-1080x1920.png   启动页成图
+    brand/splash-1080x1920.png   启动页成图（仅作设计参考）
     brand/app-icon.svg           矢量源文件，留给以后改设计，脚本不直接用
 
 跨平台一致性：
     * Android legacy / iOS AppIcon —— 整张母版缩放，系统负责加圆角遮罩。
     * Android adaptive（8+）—— 单独生成透明底 foreground 与渐变 background，
       图形严格落在中心 66dp 安全区内，避免被圆形/方形遮罩裁掉交织环。
-    * 启动页 —— 先裁掉成图里的「假状态栏 9:41」和底部 Home 指示条，
-      再按密度出图；这两样由系统绘制，留着会出现两份。
+    * 启动页（0.4.5 起）—— 原生层只铺渐变 / 纯色底，不再放整页缩略位图：
+      360dp 宽的成图居中摆上去，冷启动会先闪一帧「小一号的启动页」，Flutter
+      首帧才换成全屏矢量页。名称与标语统一由 lib/splash_page.dart 绘制；
+      本脚本只负责校验旧位图和旧引用没有被误恢复。
 """
 
 from __future__ import annotations
@@ -34,24 +36,41 @@ BRAND = ROOT / "brand"
 ICON_MASTER = BRAND / "app-icon-1024.png"
 SPLASH_MASTER = BRAND / "splash-1080x1920.png"
 
-# 启动页成图 1080x1920：状态栏占 0..140，Home 指示条约在 1860 之后。
-SPLASH_CROP_TOP = 140
-SPLASH_CROP_BOTTOM = 1850
-
 # 自适应图标：108dp 画布里只有中心 66dp 一定可见。
 ADAPTIVE_SAFE_RATIO = 66.0 / 108.0
 
 ANDROID_DENSITIES = (
-    # 目录后缀, 相对 mdpi 倍率, legacy 图标边长, adaptive 画布边长, 启动图宽度
-    ("mdpi", 1.0, 48, 108, 360),
-    ("hdpi", 1.5, 72, 162, 540),
-    ("xhdpi", 2.0, 96, 216, 720),
-    ("xxhdpi", 3.0, 144, 324, 1080),
-    ("xxxhdpi", 4.0, 192, 432, 1440),
+    # 目录后缀, 相对 mdpi 倍率, legacy 图标边长, adaptive 画布边长
+    ("mdpi", 1.0, 48, 108),
+    ("hdpi", 1.5, 72, 162),
+    ("xhdpi", 2.0, 96, 216),
+    ("xxhdpi", 3.0, 144, 324),
+    ("xxxhdpi", 4.0, 192, 432),
 )
 
+ANDROID_RES = ROOT / "android/app/src/main/res"
 IOS_ICONSET = ROOT / "ios/Runner/Assets.xcassets/AppIcon.appiconset"
 IOS_LAUNCHSET = ROOT / "ios/Runner/Assets.xcassets/LaunchImage.imageset"
+
+# 旧版把整张启动页成图按密度塞进原生层，冷启动会闪一帧「小一号的启动页」。
+# 这些文件必须保持删除状态：--check 命中任意一个就判红。
+LEGACY_SPLASH_FILES = tuple(
+    [ANDROID_RES / ("drawable-" + row[0]) / "launch_logo.png"
+     for row in ANDROID_DENSITIES]
+    + [IOS_LAUNCHSET / "Contents.json"]
+    + [IOS_LAUNCHSET / name for name in
+       ("LaunchImage.png", "LaunchImage@2x.png", "LaunchImage@3x.png")]
+)
+
+# 原生配置里也不许再出现对这些位图（或系统小图标）的引用。
+# 注意匹配的是资源引用串，注释里提到旧名字不算回归。
+SPLASH_BITMAP_REFS = (
+    (ANDROID_RES / "drawable/launch_background.xml", "@drawable/launch_logo"),
+    (ANDROID_RES / "drawable-v21/launch_background.xml", "@drawable/launch_logo"),
+    (ANDROID_RES / "values-v31/styles.xml", "@mipmap/ic_launcher_foreground"),
+    (ROOT / "ios/Runner/Base.lproj/LaunchScreen.storyboard",
+     'image="LaunchImage"'),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -373,12 +392,6 @@ def gradient_background(size: int) -> bytearray:
     return out
 
 
-def crop_splash(splash: bytearray, sw: int, sh: int) -> tuple[int, int, bytearray]:
-    height = SPLASH_CROP_BOTTOM - SPLASH_CROP_TOP
-    start = SPLASH_CROP_TOP * sw * 3
-    return sw, height, bytearray(splash[start:start + sw * height * 3])
-
-
 # ---------------------------------------------------------------------------
 # 输出
 # ---------------------------------------------------------------------------
@@ -395,12 +408,12 @@ def main() -> int:
         return 1
 
     iw, ih, icon = read_png(ICON_MASTER)
-    sw, sh, splash = read_png(SPLASH_MASTER)
+    # 成图只作设计参考：仍校验尺寸，但不再裁切、不再出位图。
+    sw, sh, _ = read_png(SPLASH_MASTER)
     if (iw, ih) != (1024, 1024) or (sw, sh) != (1080, 1920):
         print("::error::母版尺寸不符：图标 %sx%s，启动页 %sx%s" % (iw, ih, sw, sh))
         return 1
 
-    cw, ch, cropped = crop_splash(splash, sw, sh)
     fg1024 = cut_out_foreground(icon, 1024)
     expected: list[tuple[Path, int, int]] = []
     written = 0
@@ -413,14 +426,11 @@ def main() -> int:
             write_png(path, w, h, pixels, channels)
             written += 1
 
-    # ---- Android：legacy 图标 / 圆形图标 / 自适应图标 / 启动页 ----
-    # 启动图只留一份 xxhdpi：Android 会自动按屏幕密度缩放，渐变 + 文字对缩放
-    # 不敏感，而五个密度各存一张会让 APK 平白多出约 4MB。
-    launch_density = "xxhdpi"
-    stale_launch: list[Path] = []
-    for density, _scale, legacy, adaptive, launch_w in ANDROID_DENSITIES:
-        res = ROOT / "android/app/src/main/res"
-        mipmap = res / ("mipmap-" + density)
+    # ---- Android：legacy 图标 / 圆形图标 / 自适应图标 ----
+    # 不再产出 launch_logo.png：原生启动层只铺渐变底色，冷启动不该先闪
+    # 一帧 360dp 宽的「缩小版启动页」。
+    for density, _scale, legacy, adaptive in ANDROID_DENSITIES:
+        mipmap = ANDROID_RES / ("mipmap-" + density)
         emit(mipmap / "ic_launcher.png", legacy, legacy,
              resize_rgb(icon, iw, ih, legacy, legacy))
         emit(mipmap / "ic_launcher_round.png", legacy, legacy,
@@ -429,16 +439,6 @@ def main() -> int:
              compose_adaptive(fg1024, 1024, adaptive), 4)
         emit(mipmap / "ic_launcher_background.png", adaptive, adaptive,
              gradient_background(adaptive))
-        stale = res / ("drawable-" + density) / "launch_logo.png"
-        if density == launch_density:
-            launch_h = round(launch_w * ch / cw)
-            emit(stale, launch_w, launch_h,
-                 resize_rgb(cropped, cw, ch, launch_w, launch_h))
-        else:
-            # 旧版在其它密度也放过启动图；留着会被系统优先选中，覆盖新设计。
-            stale_launch.append(stale)
-            if not check and stale.exists():
-                stale.unlink()
 
     # ---- iOS AppIcon：直接按 Contents.json 的 size × scale 出图 ----
     contents = json.loads((IOS_ICONSET / "Contents.json").read_text("utf-8"))
@@ -451,17 +451,10 @@ def main() -> int:
         emit(IOS_ICONSET / filename, px, px,
              resize_rgb(icon, iw, ih, px, px))
 
-    # ---- iOS LaunchImage：1x/2x/3x 与 Android 同一张裁切图 ----
-    for scale in (1, 2, 3):
-        lw = 360 * scale
-        lh = round(lw * ch / cw)
-        name = "LaunchImage.png" if scale == 1 else "LaunchImage@%dx.png" % scale
-        emit(IOS_LAUNCHSET / name, lw, lh,
-             resize_rgb(cropped, cw, ch, lw, lh))
+    # ---- iOS LaunchScreen 也只留纯色底，不再产出 LaunchImage 三件套 ----
 
     # ---- 校验 ----
     missing = [p for p, _, _ in expected if not p.exists()]
-    leftover = [p for p in stale_launch if p.exists()]
     bad = []
     for path, w, h in expected:
         if path.exists():
@@ -469,22 +462,31 @@ def main() -> int:
             if got != (w, h):
                 bad.append("%s 期望 %dx%s 实际 %dx%s"
                            % (path.relative_to(ROOT), w, h, got[0], got[1]))
-    if missing or bad or leftover:
+    # 冷启动那一帧「小一号的启动页」的回归锚点：位图文件和原生引用都不许回来。
+    leftover = [p for p in LEGACY_SPLASH_FILES if p.exists()]
+    stale_refs = [
+        (path, needle)
+        for path, needle in SPLASH_BITMAP_REFS
+        if path.exists() and needle in path.read_text("utf-8")
+    ]
+    if missing or bad or leftover or stale_refs:
         for path in missing:
             print("::error::缺少资源 %s" % path.relative_to(ROOT))
         for line in bad:
             print("::error::尺寸不符 %s" % line)
         for path in leftover:
-            print("::error::残留其它密度的旧启动图 %s（会盖住新设计）"
+            print("::error::残留缩略启动页位图 %s（冷启动会先闪一帧小页面）"
                   % path.relative_to(ROOT))
+        for path, needle in stale_refs:
+            print("::error::原生启动层仍引用旧位图 / 小图标：%s 里的 %s"
+                  % (path.relative_to(ROOT), needle))
         return 1
 
     if check:
-        print("品牌资源校验通过：%d 个文件尺寸全部正确，无旧启动图残留"
+        print("品牌资源校验通过：%d 个图标尺寸正确，原生启动层无缩略位图残留"
               % len(expected))
     else:
-        print("已生成 %d 个品牌资源（Android 图标 %d 个 + 启动图 1 张 / "
-              "iOS 图标 %d 个 + 启动图 3 张）"
+        print("已生成 %d 个图标资源（Android %d + iOS %d）；启动页由 Flutter 矢量绘制"
               % (written, len(ANDROID_DENSITIES) * 4, len(ios_px)))
     return 0
 

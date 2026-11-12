@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 启动页：与 brand/splash-1080x1920.png 同色系的深青底 + 居中的品牌主视觉。
-     launch_logo 由 scripts/generate_brand_assets.py 从成图裁掉假状态栏 / Home 条后
-     按密度生成（360dp 宽），Flutter 画出第一帧后自动被替换。 -->
+<!-- 冷启动底色：只画深青渐变，不放任何图片。
+     旧版在这里居中摆一张由成图裁出的 launch_logo（360dp 宽的整页缩略图），
+     冷启动会先闪一帧「小一号的启动页」，Flutter 首帧才换成全屏正式启动页，
+     真机上就是「页面先小一下再变大」。现在原生层只负责底色，品牌文字
+     全部由 lib/splash_page.dart 全屏矢量绘制，两者同色系，切换无缩放感。 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
     <item>
         <shape android:shape="rectangle">
@@ -10,10 +12,5 @@
                 android:startColor="@color/splash_top"
                 android:endColor="@color/splash_bottom" />
         </shape>
-    </item>
-    <item>
-        <bitmap
-            android:gravity="center"
-            android:src="@drawable/launch_logo" />
     </item>
 </layer-list>

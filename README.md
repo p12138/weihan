@@ -63,7 +63,7 @@
 | `lib/xfyun_speech.dart` | HMAC-SHA256 签名 + wss 多语种 ASR / TTS 协议实现，传输层可注入；ASR 按 40ms/帧实时率发帧 |
 | `lib/default_speech.dart` | `ConfigurableSpeechPort`：设置页保存凭证后立即生效，无需重新出包 |
 | `lib/device_audio.dart` | 录音（16k/16bit/单声道 PCM 流）、从 PCM 直接算实时音量、录音诊断、播放（mp3，含音频会话配置）、启动页结束后预申请麦克风权限 |
-| `lib/splash_page.dart` | 应用内品牌启动页：矢量重绘成图文字、`kSplashHold` 停留时长、到点淡出到对话页 |
+| `lib/splash_page.dart` | 应用内品牌启动页：全屏矢量重绘成图文字、纯透明度淡入（不缩放）、`kSplashHold` 停留时长、到点淡出到对话页 |
 | `lib/speech_pipeline.dart` | 三环编排：ASR → MT → TTS；合成失败降级为 `speakError`，不丢文字 |
 | `lib/conversation_page.dart` | 对话 UI（维文 RTL、方向切换、语音按钮、译文朗读、云端设置） |
 | `lib/theme.dart` | 四套主题配色 `BrandPalette` + 全局色板 `AppColors` + 组件默认样式、维文行距 |
@@ -71,7 +71,7 @@
 | `lib/palette_store.dart` | 主题选择的落盘（纯文本，不引入 shared_preferences） |
 | `lib/brand_mark.dart` | 应用内品牌标识，与桌面图标同源的交织双环 + 中心星芒（CustomPainter） |
 | `brand/` | 设计母版：`app-icon-1024.png`、`app-icon.svg`、`splash-1080x1920.png`（只作母版，不打包） |
-| `scripts/generate_brand_assets.py` | 纯标准库 PNG 读写 + Lanczos3，从母版生成双端 39 个图标 / 启动图资源；`--check` 供 CI 校验 |
+| `scripts/generate_brand_assets.py` | 纯标准库 PNG 读写 + Lanczos3，从母版生成双端 35 个图标资源；`--check` 供 CI 校验，并守住启动层不回落缩略位图 |
 | `test/ui_brand_test.dart` | 视觉回归：标语、品牌标识、方向胶囊、按住说话的语音按钮 |
 | `test/theme_test.dart` | 主题系统回归：色板完整性、切换生效、设置页换色 |
 | `test/audio_level_test.dart` | 音量与录音诊断单测：dBFS / PCM RMS 映射、静音与满幅、低电平提示 |
@@ -82,7 +82,7 @@
 | `test/conversation_test.dart` | 领域模型 / 降级链 / 演示词库单测 |
 | `test/conversation_page_test.dart` | widget 交互测试，把「中文→维文」等真机验证过的行为固化成断言 |
 | `test/voice_cancel_test.dart` | 上滑取消回归：取消不跑云端三环、滑回来照常翻译、横滑不误触 |
-| `test/splash_page_test.dart` | 启动页停留时长与「到点才进对话页」回归 |
+| `test/splash_page_test.dart` | 启动页停留时长、「到点才进对话页」、全屏无缩放淡入回归 |
 | `test/niutrans_translator_test.dart` | 16 个单测：小牛签名、请求体、语种码、重试、降级（假网关） |
 | `test/azure_translator_test.dart` | 9 个单测：Azure 请求头、语言映射、区域、降级（假网关） |
 | `test/settings_test.dart` | 2 个 widget 测试：填入 / 清空凭证后模式条切换 |
@@ -457,23 +457,26 @@ E2E UI 回归通过：录音启停 / 双气泡 / 自动朗读 / 朗读按钮
   legacy / round 图标、iOS 全尺寸 `AppIcon`（无 alpha，系统自己切圆角）。
   应用内 `BrandMark` 用 CustomPainter 画同一套几何，顶栏与空状态和桌面图标是
   同一个东西；颜色固定为品牌色，不随主题漂移。
-- **启动页**：`brand/splash-1080x1920.png` 先裁掉成图里的「假状态栏 9:41」和
-  Home 指示条（这两样由系统绘制，留着会出现两份），再按密度出图。Android 用
-  深青 `windowBackground` + 居中品牌主视觉，12+ 另配
-  `windowSplashScreenBackground`/`AnimatedIcon`；iOS `LaunchScreen.storyboard`
-  改成四边贴边 + `scaleAspectFill`，底色 `#062538`。为控制体积，Android 启动图
-  只留一份 `drawable-xxhdpi`，由系统按屏幕密度缩放。
-- **启动页停留（0.4.4）**：原生启动图只在冷启动那一瞬顶着白屏，Flutter 画出
-  第一帧系统就把它撤掉，真机反馈「融合」和两行标语一闪就没了。所以
-  `lib/splash_page.dart` 在 Flutter 侧接上同一套视觉 —— 深青渐变、交织环标识、
-  名称 / 拼音 / 标语 / 英文副题 / 底部落款全部**用矢量与文字重画**，不把 1.4MB
-  成图塞进包，文字还能按密度保持锐利 —— 再停满 `kSplashHold`（2.6 秒）后
-  450ms 淡出到对话页。麦克风授权框也延后到启动页结束再弹，不盖住要读的字。
-  `BaseApp.showSplash` 只有真正的 `main()` 打开：widget 测试 pump `const BaseApp()`
-  仍直接进对话页，既不用等两秒多，也不会让「融合」在首屏命中两份。
+- **启动层（0.4.5）**：原生层**只铺底色，不放任何启动页位图**。旧版把
+  `brand/splash-1080x1920.png` 裁成 360dp 宽的整页缩略图，居中摆进 Android
+  `windowBackground`、iOS `LaunchScreen.storyboard`；真机冷启动会先闪一帧
+  「小一号的启动页」，Flutter 首帧才换成全屏矢量页 —— 这一帧已彻底删掉。
+  现在 Android `drawable/launch_background.xml` 只留 `splash_top → splash_bottom`
+  渐变；12+ 的系统 SplashScreen 图标换成全透明 `splash_icon_empty`、动画时长归零、
+  底色取渐变中点 `splash_mid`，不会再冒出居中的系统小图标；iOS 改为纯色
+  `#0D3E52`。`launch_logo.png` 与整个 `LaunchImage.imageset` 已从仓库删除（顺带
+  再省约 1.2MB），成图仍留在 `brand/` 只作设计参考，不打包。
+- **启动页停留（0.4.4）**：Flutter 画出第一帧系统就把原生底色撤掉，真机反馈
+  「融合」和两行标语一闪就没了。所以 `lib/splash_page.dart` 在 Flutter 侧接上
+  同一套视觉 —— 深青渐变、交织环标识、名称 / 拼音 / 标语 / 英文副题 / 底部落款
+  全部**用矢量与文字重画**，文字按密度保持锐利 —— 内容用 280ms **纯透明度**
+  淡入（刻意不用任何缩放，否则又会被看成「先小后大」），停满 `kSplashHold`
+  （2.6 秒）后 450ms 淡出到对话页。麦克风授权框延后到启动页结束再弹，不盖住
+  要读的字。`BaseApp.showSplash` 只有真正的 `main()` 打开：widget 测试 pump
+  `const BaseApp()` 仍直接进对话页，既不用等两秒多，也不会让「融合」命中两份。
 - **改设计**：换掉 `brand/` 里的母版后跑 `python3 scripts/generate_brand_assets.py`，
-  再用 `--check` 校验 39 个资源齐全、尺寸正确、且没有旧密度的启动图残留；
-  CI 每轮自动跑 `--check`，资源丢了会直接判红。
+  再用 `--check` 校验 35 个图标资源齐全、尺寸正确，且旧启动页位图与原生引用
+  没有被误恢复；CI 每轮自动跑 `--check`，资源丢了或「小启动页」回来了都判红。
 - **主界面**：渐变顶栏（品牌标识 + 名称 + 标语 + 调色板/设置）、**方向切换卡**
   （中文 / 维语两枚语言胶囊 + 中间交换键 + 一行通道状态）、空状态（92px 标识 +
   标语 + 三条操作提示）、双语气泡（自己的在右用渐变深底，对方在左用白卡描边）、

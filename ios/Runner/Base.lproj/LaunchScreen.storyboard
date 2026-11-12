@@ -15,17 +15,10 @@
                     </layoutGuides>
                     <view key="view" contentMode="scaleToFill" id="Ze5-6b-2t3">
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
-                        <subviews>
-                            <imageView opaque="NO" clipsSubviews="YES" multipleTouchEnabled="YES" contentMode="scaleAspectFill" image="LaunchImage" translatesAutoresizingMaskIntoConstraints="NO" id="YRO-k0-Ey4">
-                            </imageView>
-                        </subviews>
-                        <color key="backgroundColor" red="0.023529411764705882" green="0.1450980392156863" blue="0.2196078431372549" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
-                        <constraints>
-                            <constraint firstItem="YRO-k0-Ey4" firstAttribute="leading" secondItem="Ze5-6b-2t3" secondAttribute="leading" id="B0-le-ad01"/>
-                            <constraint firstItem="YRO-k0-Ey4" firstAttribute="trailing" secondItem="Ze5-6b-2t3" secondAttribute="trailing" id="B0-le-ad02"/>
-                            <constraint firstItem="YRO-k0-Ey4" firstAttribute="top" secondItem="Ze5-6b-2t3" secondAttribute="top" id="B0-le-ad03"/>
-                            <constraint firstItem="YRO-k0-Ey4" firstAttribute="bottom" secondItem="Ze5-6b-2t3" secondAttribute="bottom" id="B0-le-ad04"/>
-                        </constraints>
+                        <!-- 冷启动只铺品牌底色，不放整张成图：位图与 Flutter 侧
+                             矢量重绘的正式启动页尺寸对不齐，会闪一帧「小一号的页面」。
+                             名称 / 标语统一由 lib/splash_page.dart 全屏绘制。 -->
+                        <color key="backgroundColor" red="0.050980392156862744" green="0.24313725490196078" blue="0.3215686274509804" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
                     </view>
                 </viewController>
                 <placeholder placeholderIdentifier="IBFirstResponder" id="iYj-Kq-Ea1" userLabel="First Responder" sceneMemberID="firstResponder"/>
@@ -33,7 +26,5 @@
             <point key="canvasLocation" x="53" y="375"/>
         </scene>
     </scenes>
-    <resources>
-        <image name="LaunchImage" width="360" height="570"/>
-    </resources>
+    <resources/>
 </document>

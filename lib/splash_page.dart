@@ -6,9 +6,8 @@ import 'brand_mark.dart';
 
 /// 启动页停留时长。
 ///
-/// 原生启动图只在冷启动那一瞬间顶着白屏；Flutter 一画出第一帧系统就把它撤掉，
-/// 所以实测「融合」和两行标语一闪就没了。这里在 Flutter 侧接上同一套视觉，
-/// 再稳稳停够这段时间让人读完，然后淡出到对话页。
+/// 原生层只铺同色系底色（不再放整页缩略位图，避免冷启动先闪一帧「小页面」）；
+/// Flutter 首帧就把全屏品牌视觉接上，稳稳停够这段时间让人读完，再淡出到对话页。
 const Duration kSplashHold = Duration(milliseconds: 2600);
 
 /// 品牌固定色：和 android/.../values/colors.xml、iOS LaunchScreen.storyboard
@@ -96,34 +95,47 @@ class _SplashGateState extends State<SplashGate> {
 /// 不塞那张 1.4MB 位图进包，文字还能按屏幕密度保持锐利 —— 用户要看清的
 /// 正是这两行标语。布局和成图一致：深青渐变、居中图标、名称、拼音、分隔星、
 /// 双语标语、英文副题，底部三点与落款。
+///
+/// 这一屏从第一帧起就是**全屏**的：原生层现在只给同色系底色，内容用一次
+/// 280ms 的纯透明度淡入浮出来。刻意不用 ScaleTransition / Transform.scale ——
+/// 任何缩放都会让真机看成「启动页先小一下再变大」，那正是要修掉的问题。
 class SplashView extends StatelessWidget {
   const SplashView({super.key});
 
   @override
   Widget build(BuildContext context) {
-    return const DecoratedBox(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: <Color>[_splashTop, _splashBottom],
+    return TweenAnimationBuilder<double>(
+      tween: const Tween<double>(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOut,
+      // 一次性补间，不是 repeat()：widget 测试里的 pumpAndSettle 能收敛。
+      builder: (BuildContext context, double opacity, Widget? child) {
+        return Opacity(opacity: opacity, child: child);
+      },
+      child: const DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: <Color>[_splashTop, _splashBottom],
+          ),
         ),
-      ),
-      child: SafeArea(
-        child: Stack(
-          children: <Widget>[
-            Align(
-              alignment: Alignment(0, -0.12),
-              child: Padding(
-                padding: EdgeInsets.symmetric(horizontal: 26),
-                child: _SplashCenter(),
+        child: SafeArea(
+          child: Stack(
+            children: <Widget>[
+              Align(
+                alignment: Alignment(0, -0.12),
+                child: Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 26),
+                  child: _SplashCenter(),
+                ),
               ),
-            ),
-            Align(
-              alignment: Alignment(0, 0.9),
-              child: _SplashFooter(),
-            ),
-          ],
+              Align(
+                alignment: Alignment(0, 0.9),
+                child: _SplashFooter(),
+              ),
+            ],
+          ),
         ),
       ),
     );

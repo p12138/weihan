@@ -1,8 +1,9 @@
-// 启动页停留时长的回归锚点。
+// 启动页的回归锚点。
 //
-// 真机反馈「启动页一闪就过，看不清写的什么」：原生启动图在 Flutter 首帧就被
-// 系统撤掉，所以这里在 Flutter 侧接一屏同款视觉并停够时间。用短 hold 把
-// 「停留期间 / 停留结束」两个状态都钉住，避免以后又被优化掉。
+// 真机反馈过两件事：①「一闪就过，看不清写的什么」→ Flutter 侧接一屏同款视觉
+// 停够时间；②「冷启动先出现小一号的启动页」→ 原生层不再放整页缩略位图，
+// Flutter 这一屏从第一帧就全屏、且不做任何缩放。用短 hold 把状态钉住，
+// 避免以后又被优化掉。
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -43,6 +44,46 @@ void main() {
       find.byKey(const ValueKey<String>('voice-button')),
       findsOneWidget,
     );
+  });
+
+  testWidgets('启动页从第一帧就全屏铺底，不用缩放动画',
+      (WidgetTester tester) async {
+    await tester.pumpWidget(const BaseApp(
+      showSplash: true,
+      splashHold: Duration(milliseconds: 900),
+    ));
+
+    // 任何 ScaleTransition / Transform.scale 都会让冷启动看起来像
+    // 「先有一个小页面再放大」，这里直接钉死：只允许纯透明度淡入。
+    expect(
+      find.descendant(
+        of: find.byKey(_splashKey),
+        matching: find.byType(Transform),
+      ),
+      findsNothing,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(_splashKey),
+        matching: find.byType(ScaleTransition),
+      ),
+      findsNothing,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(_splashKey),
+        matching: find.byType(Opacity),
+      ),
+      findsWidgets,
+    );
+
+    final Size splash = tester.getSize(find.byKey(_splashKey));
+    expect(splash.width, greaterThan(300));
+    expect(splash.height, greaterThan(300));
+
+    // 让 hold 的 Timer 正常触发，测试结束不留悬挂定时器。
+    await tester.pump(const Duration(milliseconds: 900));
+    await tester.pumpAndSettle();
   });
 
   testWidgets('测试默认不套启动页，首屏直接是对话页',

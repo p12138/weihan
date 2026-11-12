@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+ 系统 SplashScreen 的图标位。
+     给它一张全透明方图：系统那一帧就不会再冒出居中的应用小图标
+     （真机上看起来就是「先出现一个小小的启动页」）。底色由
+     windowSplashScreenBackground 负责，正式启动页由 Flutter 全屏绘制。 -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <size android:width="1dp" android:height="1dp" />
+    <solid android:color="@android:color/transparent" />
+</shape>
