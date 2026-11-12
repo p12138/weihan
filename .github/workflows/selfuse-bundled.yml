@@ -27,11 +27,6 @@ on:
       - "scripts/**"
       - ".github/workflows/selfuse-bundled.yml"
   workflow_dispatch:
-    inputs:
-      with_ios:
-        description: "同时出 iOS 模拟器自带凭证包（消耗 macOS 计费分钟）"
-        type: boolean
-        default: false
 
 concurrency:
   group: selfuse-bundled-${{ github.ref }}
@@ -94,7 +89,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # 历史上用过的所有含凭证附件名，任何一个都不能留在公开 Release 里。
-          ASSET_NAMES: weihan-selfuse-debug.apk,weihan-selfuse-debug-fallback.apk,weihan-selfuse-arm64.apk,weihan-selfuse-v7a.apk
+          ASSET_NAMES: weihan-selfuse-debug.apk,weihan-selfuse-debug-fallback.apk,weihan-selfuse-arm64.apk,weihan-selfuse-v7a.apk,weihan-selfuse-ios-unsigned.ipa,weihan-selfuse-bundled-simulator.ipa
         run: |
           set -euo pipefail
           # 仓库从 private 转 public 时，之前发布的自带凭证包会突然变成人人可下载。
@@ -387,6 +382,10 @@ jobs:
           很老的 32 位机器才装 weihan-selfuse-v7a.apk；
           weihan-selfuse-debug-fallback.apk 只在上面两个装不上或闪退时使用（体积大很多）。
 
+          【iOS】weihan-selfuse-ios-unsigned.ipa 是未签名真机包（CI 没有你的证书），
+          需用 Sideloadly / 爱思助手 / Xcode 重签后安装；首次打开到
+          「设置 → 通用 → VPN 与设备管理」信任描述文件。该包在本轮构建稍后追加。
+
           产物与校验值：${listing}
           ${visibility_note}
           ⚠️ 凭证可被打包体反编译提取，请勿分发本包。"
@@ -445,11 +444,13 @@ jobs:
         run: rm -f /tmp/weihan_bundle_defines.json
 
   bundled-ios:
-    name: iOS 模拟器自带凭证包（手动可选）
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.with_ios }}
-    needs: guard
+    name: iOS 自带凭证包（真机未签名 IPA）
+    # CI 里没有你的签名证书与描述文件，所以只能产出「未签名真机 IPA」：
+    # 你用 Sideloadly / 爱思助手 / Xcode 自带证书重签后即可安装。
+    # 等 APK 作业把 Release 建好再跑，避免两个作业抢同一个 Release。
+    needs: [guard, bundled-apk]
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 50
     env:
       NIUTRANS_APP_ID: ${{ secrets.NIUTRANS_APP_ID }}
       NIUTRANS_API_KEY: ${{ secrets.NIUTRANS_API_KEY }}
@@ -485,33 +486,139 @@ jobs:
       - name: 生成编译期配置（只输出键名）
         run: python3 scripts/write_bundle_defines.py /tmp/weihan_bundle_defines.json
 
-      - name: Build 自带凭证 iOS Simulator 包
+      # --no-codesign：跳过签名，产出未签名 Runner.app。真机装不上是正常的，
+      # 需要你自己重签；这里只保证「编译通过 + 包结构完整 + 凭证已注入」。
+      - name: Build 自带凭证 iOS release 包（真机、未签名）
         run: |
           set -o pipefail
-          if flutter build ios --simulator --debug --no-codesign \
-              --dart-define-from-file=/tmp/weihan_bundle_defines.json \
-              2>&1 | tee /tmp/bundled_ios.log; then
-            exit 0
-          fi
-          python3 scripts/emit_build_error.py \
-            /tmp/bundled_ios.log "自带凭证 iOS 构建"
+          for attempt in 1 2 3; do
+            echo "::group::flutter build ios --release --no-codesign (attempt ${attempt}/3)"
+            if flutter build ios --release --no-codesign \
+                --dart-define-from-file=/tmp/weihan_bundle_defines.json \
+                2>&1 | tee /tmp/bundled_ios.log; then
+              echo "::endgroup::"
+              ls -ld build/ios/iphoneos/Runner.app
+              exit 0
+            fi
+            echo "::endgroup::"
+            python3 scripts/emit_build_error.py \
+              /tmp/bundled_ios.log "自带凭证 iOS release 构建" "${attempt}"
+            if [ "$attempt" -lt 3 ]; then
+              echo "::warning::构建失败，10s 后重试（第 ${attempt}/3 次）"
+              sleep 10
+            fi
+          done
+          echo "::error::自带凭证 iOS release 包连续 3 次构建失败"
           exit 1
 
-      - name: 打包为未签名模拟器 IPA
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundled-ios-build-log-${{ github.run_number }}
+          path: /tmp/bundled_ios.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      # 标准 IPA 结构：Payload/Runner.app。zip 必须保留符号链接（-y），
+      # 否则 .app 里的 Frameworks 软链会变成实体副本，重签工具会报错。
+      - name: 打包为未签名 IPA
         run: |
+          set -euo pipefail
+          app=build/ios/iphoneos/Runner.app
+          test -d "$app" || { echo "::error::没有找到 $app"; exit 1; }
+          rm -rf dist
           mkdir -p dist/Payload
-          cp -R build/ios/iphonesimulator/Runner.app dist/Payload/
-          (cd dist && zip -qry weihan-selfuse-bundled-simulator.ipa Payload)
-          ls -lh dist/*.ipa
+          cp -R "$app" dist/Payload/
+          (cd dist && zip -qry -X weihan-selfuse-ios-unsigned.ipa Payload)
+          ls -lh dist/weihan-selfuse-ios-unsigned.ipa
+
+      - name: 校验 IPA 结构与编译期配置
+        run: |
+          python3 - <<'PY'
+          import zipfile
+
+          path = 'dist/weihan-selfuse-ios-unsigned.ipa'
+          zf = zipfile.ZipFile(path)
+          names = zf.namelist()
+          print('::notice::IPA 条目 %d 个' % len(names))
+
+          required = ['Payload/Runner.app/Info.plist', 'Payload/Runner.app/Runner']
+          missing = [n for n in required if n not in names]
+          if missing:
+              print('::error::IPA 缺少必要文件：%s' % ', '.join(missing))
+              raise SystemExit(1)
+
+          # 未签名判定：签名后会生成 _CodeSignature 目录。
+          signed = any(n.startswith('Payload/Runner.app/_CodeSignature') for n in names)
+          if signed:
+              print('::warning::IPA 内含 _CodeSignature，说明不是未签名包；重签前请确认')
+          else:
+              print('::notice::确认未签名（无 _CodeSignature），可用自己的证书重签')
+
+          # release 的 Dart 代码在 App.framework/App 里；中文串按 UTF-16 存储，
+          # 两种编码都试，只查固定文案，绝不打印任何凭证值。
+          marker = '凭证已内置于安装包'
+          probes = [marker.encode('utf-8'), marker.encode('utf-16-le')]
+          target = 'Payload/Runner.app/Frameworks/App.framework/App'
+          if target in names:
+              data = zf.read(target)
+              if any(p in data for p in probes):
+                  print('::notice::已确认编译期配置进入 App.framework（仅命中固定文案）')
+              else:
+                  print('::warning::App.framework 内未搜到固定文案；AOT 可能重编码字符串，'
+                        '以 Dart 侧注入自检为准')
+          else:
+              print('::warning::未找到 %s，跳过注入标记检查' % target)
+          PY
 
       - name: Upload 自带凭证 iOS IPA
         if: ${{ needs.guard.outputs.artifact == 'true' }}
         uses: actions/upload-artifact@v4
         with:
           name: weihan-selfuse-bundled-ipa-${{ github.run_number }}
-          path: dist/weihan-selfuse-bundled-simulator.ipa
+          path: dist/weihan-selfuse-ios-unsigned.ipa
           if-no-files-found: error
           retention-days: 3
+
+      # 追加到 APK 作业刚建好的两个 Release（滚动 tag + 版本 tag）。
+      # 草稿模式下同样可上传，匿名访客看不到。
+      - name: 追加 IPA 到 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(python3 -c "import re; m=re.search(r'^version:\s*([0-9.]+)', open('pubspec.yaml',encoding='utf-8').read(), re.M); print(m.group(1) if m else '0.0.0')")"
+          tag="v${version}-build${GITHUB_RUN_NUMBER}"
+          file=dist/weihan-selfuse-ios-unsigned.ipa
+          sha="$(shasum -a 256 "$file" | cut -d' ' -f1)"
+          size="$(du -h "$file" | cut -f1)"
+          echo "::notice::iOS IPA ${size} · SHA-256 ${sha}"
+
+          for t in selfuse-latest "$tag"; do
+            for attempt in 1 2 3; do
+              if gh release upload "$t" "$file" --clobber; then
+                echo "::notice::已把 IPA 追加到 Release ${t}"
+                break
+              fi
+              if [ "$attempt" -eq 3 ]; then
+                echo "::error::向 Release ${t} 上传 IPA 连续 3 次失败"
+                exit 1
+              fi
+              echo "::warning::上传到 ${t} 失败，10s 后重试（第 ${attempt}/3 次）"
+              sleep 10
+            done
+          done
+
+          {
+            echo "### iOS 自带凭证包"
+            echo ""
+            echo "产物：\`weihan-selfuse-ios-unsigned.ipa\`（${size}）"
+            echo ""
+            echo "**未签名**：CI 没有你的证书。用 Sideloadly / 爱思助手 / Xcode 重签后安装，首次打开需在「设置 → 通用 → VPN 与设备管理」信任描述文件。"
+            echo ""
+            echo "SHA-256：\`${sha}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 清理 runner 临时凭证文件
         if: always()
@@ -541,5 +648,7 @@ jobs:
           fi
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**怎么选**：64 位手机装 \`weihan-selfuse-arm64.apk\`；老 32 位机器装 \`weihan-selfuse-v7a.apk\`；两个都装不上才用 \`weihan-selfuse-debug-fallback.apk\`（体积大）。" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**iOS**：\`weihan-selfuse-ios-unsigned.ipa\`（真机未签名，需自签后安装）由稍后运行的 iOS 作业追加到同一个 Release。直接下载需登录（草稿模式）。" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**注意**：凭证在安装包二进制中可被反编译提取，请勿分发此包。" >> "$GITHUB_STEP_SUMMARY"

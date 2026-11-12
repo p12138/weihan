@@ -78,7 +78,7 @@
 | `test/audio_level_test.dart` | 音量与录音诊断单测：dBFS / PCM RMS 映射、静音与满幅、低电平提示 |
 | `lib/bundled_config.dart` | 编译期「凭证已内置」标记（不含任何值），驱动设置页不回显密钥 |
 | `scripts/write_bundle_defines.py` | 从 CI 环境变量生成 `--dart-define-from-file` JSON，只打印键名 |
-| `.github/workflows/selfuse-bundled.yml` | 自带凭证自用包出包工作流（Android 自动 / iOS 手动可选） |
+| `.github/workflows/selfuse-bundled.yml` | 自带凭证自用包出包工作流（Android APK + iOS 真机未签名 IPA，均自动） |
 | `test/smoke_test.dart` | 首页渲染冒烟测试 |
 | `test/conversation_test.dart` | 领域模型 / 降级链 / 演示词库单测 |
 | `test/conversation_page_test.dart` | widget 交互测试，把「中文→维文」等真机验证过的行为固化成断言 |
@@ -142,7 +142,9 @@ push 之后自动跑：
   每次 push 都跑，改坏 UI 编排会立刻变红。
   **两层必须分文件**：同文件混用 `test()` 与 `testWidgets()` 会让整个文件被套上
   `TestWidgetsFlutterBinding` 的 fake async，真实 WebSocket 永远等不到完成（run #38 各卡满 3 分钟）。
-- **唯一仍需你本人的是 iOS 真机分发**：非越狱 iPhone 只能装 Apple 签名过的 IPA，签名需要你的 Apple 账号 / 证书 / 设备 UDID，CI 代劳不了。日常自用建议以 Android APK 为主。
+- **iOS 只差签名这一步**：CI 已能自动出未签名真机 IPA（`weihan-selfuse-ios-unsigned.ipa`），
+  非越狱 iPhone 仍需用你自己的 Apple 账号重签后安装——签名需要证书与设备 UDID，
+  CI 代劳不了。日常自用建议以 Android APK 为主。
 - macOS runner 按 10 倍计费，设备冒烟只在代码 / 配置变更时跑（`paths` 过滤），纯文档改动不跑；也可在 Actions 页手动 `Run workflow` 触发。
 
 > **关于「用平台 SDK 做语音」**：Android / iOS 系统原生语音识别都不支持维吾尔语
@@ -596,7 +598,7 @@ E2E UI 回归通过：录音启停 / 双气泡 / 自动朗读 / 朗读按钮
 
 `selfuse-bundled.yml` 在 runner 上把 GitHub Secrets 写进一份临时 JSON
 （`scripts/write_bundle_defines.py`，0600、用完即删、只打印键名不打印值），
-再用 `flutter build apk --debug --dart-define-from-file=...` 注入。
+再用 `flutter build apk --release --split-per-abi --dart-define-from-file=...` 注入。
 App 里 `String.fromEnvironment` 早就有对应入口，所以**源码仓库依旧没有任何凭证**：
 只有键名映射、Git 历史干净、`verify_project.py` 的硬编码扫描照常 PASS。
 
@@ -620,7 +622,8 @@ CI 会先跑 `test/bundled_config_test.dart`（带同一份 define 文件）确�
 | `weihan-selfuse-v7a.apk`（Releases） | 同上 | **是** | 32 位老机器兜底 |
 | `weihan-selfuse-debug-fallback.apk`（Releases） | 同上 | **是** | 上面两个装不上/闪退时才用，体积大 |
 | `weihan-selfuse-bundled-apk-*`（Artifacts，zip） | 同上 | **是** | 同一批包的 zip 备份，保留 3 天 |
-| `weihan-selfuse-bundled-simulator.ipa` | 同上（手动勾选 with_ios） | **是** | iOS 模拟器自用，未签名 |
+| `weihan-selfuse-ios-unsigned.ipa`（Releases） | 同上（APK 完成后自动追加） | **是** | iOS 真机包，**未签名**，需用自己的证书重签后安装 |
+| `weihan-selfuse-bundled-ipa-*`（Artifacts，zip） | 同上 | **是** | iOS 包的 zip 备份，保留 3 天 |
 
 ### 体积（2026-11-11 起）
 
@@ -640,15 +643,20 @@ CI 会先跑 `test/bundled_config_test.dart`（带同一份 define 文件）确�
 ### 触发方式与下载
 
 - `lib/` / `pubspec` / 原生壳 / `scripts/` / 本工作流变更并 push 到 main 时**自动跑**；
-  也可在 Actions 页手动 `Run workflow`。想顺带出 iOS 包，勾 `with_ios`（macOS 计费分钟按 10 倍计）。
+  也可在 Actions 页手动 `Run workflow`。iOS 包（`bundled-ios`）在 APK 发布完成后
+  自动跟随构建，不再需要勾选项；public 仓库的 macOS 分钟不计费，但会多花约 10 分钟。
 - **直接下 `.apk`（推荐）**：仓库 **Releases** 页 → 「自用语音翻译包（最新）」→
   `weihan-selfuse-arm64.apk`，点一下就是安装包，不用解压。
   固定直链：`https://github.com/p12138/weihan/releases/download/selfuse-latest/weihan-selfuse-arm64.apk`
+- **iOS 怎么装**：同页下载 `weihan-selfuse-ios-unsigned.ipa`，用 Sideloadly / 爱思助手 /
+  Xcode 自带 Apple ID 重签（免费账号 7 天有效，需重签）后安装；首次打开到
+  「设置 → 通用 → VPN 与设备管理」信任描述文件。CI 没有你的证书，所以只能给未签名包。
 - **为什么 Artifacts 是 zip**：GitHub Actions 的 Artifacts 由平台强制打包成 zip，
   无法改成裸文件；想下原始 `.apk` 只能走 Releases（本工作流已自动发布）。
 - 每次构建会发两个 Release：滚动 tag `selfuse-latest`（覆盖，直链固定）与
   版本 tag `v<版本>-build<run号>`（留历史，出问题可回退到某一版）。
-  Release 说明里写了版本、commit、APK 的 SHA-256 与体积。
+  Release 说明里写了版本、commit、APK 的 SHA-256 与体积；iOS 包的体积与 SHA-256
+  写在 `bundled-ios` 作业的 Step Summary 里。
 - Artifacts 里同名的 `weihan-selfuse-bundled-apk-<run号>`（zip）保留 **3 天**作为备份。
 - **仓库可见性决定发布方式**（2026-11-11 起）：
   - **private**：Artifact + 公开 Release 都传，直链点开即下。
