@@ -199,7 +199,7 @@ class _SplashCenter extends StatelessWidget {
         const _SplashDivider(),
         const SizedBox(height: 30),
         const Text(
-          '让您和您的民族朋友',
+          '让您和民族朋友的',
           textAlign: TextAlign.center,
           style: TextStyle(
             fontSize: 17,

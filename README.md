@@ -60,11 +60,12 @@
 | `lib/translation_config.dart` | 文字翻译配置单例（服务商 / APPID / API-KEY / 区域 / 终结点），不落盘、不入库 |
 | `lib/default_translator.dart` | `ConfigurableTranslator`：每次调用按当前配置重建降级链 |
 | `lib/speech_config.dart` | 讯飞语音凭证、维语/中文发音人 vcn、代理地址（内存，不落盘） |
-| `lib/xfyun_speech.dart` | HMAC-SHA256 签名 + wss 多语种 ASR / TTS 协议实现，传输层可注入；ASR 按 40ms/帧实时率发帧 |
-| `lib/default_speech.dart` | `ConfigurableSpeechPort`：设置页保存凭证后立即生效，无需重新出包 |
-| `lib/device_audio.dart` | 录音（16k/16bit/单声道 PCM 流）、从 PCM 直接算实时音量、录音诊断、播放（mp3，含音频会话配置）、启动页结束后预申请麦克风权限 |
+| `lib/xfyun_speech.dart` | HMAC-SHA256 签名 + wss 多语种 ASR / TTS 协议实现，传输层可注入；ASR 按 40ms/帧实时率发帧，另含「边录边传」会话与 400ms 收尾上限 |
+| `lib/live_asr.dart` | 边录边传的可选能力接口（`LiveAsrSession` / `LiveSpeechPort` / `ChunkedAudioPort`），能力探测，不改老端口 |
+| `lib/default_speech.dart` | `ConfigurableSpeechPort`：设置页保存凭证后立即生效，无需重新出包；转发边录边传会话 |
+| `lib/device_audio.dart` | 录音（16k/16bit/单声道 PCM 流）、PCM 增量块广播、从 PCM 直接算实时音量、录音诊断、播放（mp3，含音频会话配置）、启动页结束后预申请麦克风权限 |
 | `lib/splash_page.dart` | 应用内品牌启动页：全屏矢量重绘成图文字、纯透明度淡入（不缩放）、`kSplashHold` 停留时长、到点淡出到对话页 |
-| `lib/speech_pipeline.dart` | 三环编排：ASR → MT → TTS；合成失败降级为 `speakError`，不丢文字 |
+| `lib/speech_pipeline.dart` | 三环编排：ASR → MT → TTS；识别 / 译文一返回就回调上屏，合成失败降级为 `speakError` 不丢文字，边录边传失败自动整段重传 |
 | `lib/conversation_page.dart` | 对话 UI（维文 RTL、方向切换、语音按钮、译文朗读、云端设置） |
 | `lib/theme.dart` | 四套主题配色 `BrandPalette` + 全局色板 `AppColors` + 组件默认样式、维文行距 |
 | `lib/palette_controller.dart` | 主题切换的唯一入口（改色板 → 通知 → 重建） |
@@ -82,6 +83,8 @@
 | `test/conversation_test.dart` | 领域模型 / 降级链 / 演示词库单测 |
 | `test/conversation_page_test.dart` | widget 交互测试，把「中文→维文」等真机验证过的行为固化成断言 |
 | `test/voice_cancel_test.dart` | 上滑取消回归：取消不跑云端三环、滑回来照常翻译、横滑不误触 |
+| `test/voice_latency_test.dart` | 低延迟回归：录音期即上传、译文先于朗读上屏、会话空结果自动重传、取消丢弃会话 |
+| `test/live_asr_session_test.dart` | 边录边传协议单测：帧序列 / 40ms 实时率 / 取消不补结束帧 / 连接失败回退 / 400ms 收尾 |
 | `test/splash_page_test.dart` | 启动页停留时长、「到点才进对话页」、全屏无缩放淡入回归 |
 | `test/niutrans_translator_test.dart` | 16 个单测：小牛签名、请求体、语种码、重试、降级（假网关） |
 | `test/azure_translator_test.dart` | 9 个单测：Azure 请求头、语言映射、区域、降级（假网关） |
@@ -445,7 +448,7 @@ E2E UI 回归通过：录音启停 / 双气泡 / 自动朗读 / 朗读按钮
 
 ## 7.5 界面与品牌
 
-应用名 **融合**，标语「让您和您的民族朋友沟通不再有障碍」。
+应用名 **融合**，标语「让您和民族朋友的沟通不再有障碍」。
 
 - **配色**：四套可切换主题，见下面「主题配色系统」。默认是松石绿 `#17635C` +
   沙金 `#C89544` + 暖白 `#FBF8F3`。深色模式刻意不做 —— 自用工具多一套配色就是
@@ -499,6 +502,23 @@ E2E UI 回归通过：录音启停 / 双气泡 / 自动朗读 / 朗读按钮
   **麦克风权限在启动页结束后就问下来**（`primeMicrophonePermission`）：`record` 的
   `hasPermission()` 会弹系统框并等用户点，若拖到按住那一刻才问，用户得松手去点，
   松手事件先到、权限回来那段录音又被当成「按太快」丢掉 —— 第一次按住会毫无反应。
+- **翻译等待缩短（0.4.6）**：老链路松手后要先把整段 PCM 按 40ms/帧实时率重放一遍
+  —— 说 5 秒就再等 5 秒，然后才依次识别、翻译、合成朗读，每条 wss 连接收尾最多还
+  各白等 3 秒。现在做三件事：
+  1. **边录边传**：按下时同步建好 ASR 会话（建连在后台跑，绝不为了等 TLS 握手耽误开录），
+     录音流每来一块 PCM 就按 `start + n×40ms` 的时间轴排队上传；松手时音频基本发完，
+     只补尾帧和结束帧。**发帧仍是官方 1x 实时率**，不重踩「10ms 全速灌导致真机识别空」
+     的坑。能力用 `LiveSpeechPort` / `ChunkedAudioPort` 两个可选接口探测，老的
+     `SpeechPort` / `AudioPort` 与所有测试替身一个字都不用改。
+  2. **译文先上屏**：`SpeechPipeline.run` 加了 `onHeard` / `onText` 回调，识别结果和译文
+     一到手就 setState，合成与朗读留在后台继续跑 —— 用户等的是「听懂对方说了什么」，
+     不该连 TTS 那一两秒也一起等。界面提示也分段推进：`正在识别与翻译…` →
+     `识别到「…」· 正在翻译…` → 最终结果。
+  3. **收尾不阻塞**：`socket.close()` 的等待上限从 3 秒压到 400ms，一轮 ASR + TTS
+     最多省 5 秒多。
+  另外，**会话连不上或云端一个字都没回时，自动拿完整 PCM 回到「录完再传」老路**：
+  真机网络千差万别，宁可多等一次上传，也不能又出现「说完了却识别不到声音」。
+  上滑取消时会话直接 `cancel()`，不补结束帧、不产生一次识别调用。
 - **录音音量可视化（微信式）**：录音时浮层从会话区中下部浮出（上方常驻一枚
   「手指上滑，取消发送」引导胶囊，进取消区后变红），13 根竖条的高度吃的是
   **真实录到的 PCM**（对每个音频块求 RMS → dBFS → 0..1，用 √ 压低端），旁边跟着计时。
@@ -511,7 +531,8 @@ E2E UI 回归通过：录音启停 / 双气泡 / 自动朗读 / 朗读按钮
   例如 `语音失败 · … · 录音 2.0s / 62.5KB / 峰值 2%`。峰值低于 5% 会直接点出
   「电平极低，麦克风可能没在收声」，一眼分清是没录到、全是静音、还是云端没认出。
   `stop()` 之前先等 60ms 让平台通道的尾帧投递完（插件的 `stop()` 会立刻取消底层
-  订阅，之后再等是没用的）；ASR 按官方 40ms/帧实时率上传，超时预算把上传时间算进去。
+  订阅，之后再等是没用的）。边录边传会话按官方 40ms/帧实时率在录音期间发完；
+  回退到「录完再传」老路时，超时预算仍把上传时间算进去，长句不会被掐断。
 - **朗读失败不吞文字**：识别 → 翻译 → 合成里，只有前两步是「必须成功」的。
   合成抛错或被服务端判空时，原文与译文照常上屏，提示里直接写清原因
   （例如「维语发音人 vcn 未配置 · 到设置页填讯飞「发音人管理」里的维吾尔语发音人」），

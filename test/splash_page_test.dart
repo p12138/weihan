@@ -26,7 +26,9 @@ void main() {
 
     expect(find.byKey(_splashKey), findsOneWidget);
     expect(find.text('融合'), findsOneWidget);
-    expect(find.text('让您和您的民族朋友'), findsOneWidget);
+    expect(find.text('让您和民族朋友的'), findsOneWidget);
+    expect(find.textContaining('不再有障碍'), findsOneWidget,
+        reason: '两行连起来是「让您和民族朋友的沟通不再有障碍」');
     expect(find.text('BRIDGING EVERY CONVERSATION'), findsOneWidget);
     expect(find.text('语言无界 · 心意相通'), findsOneWidget);
     // 停留期间对话页还没建，用户不会误触到一个看不见的输入框。

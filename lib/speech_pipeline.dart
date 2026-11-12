@@ -10,6 +10,7 @@
 import 'dart:typed_data';
 
 import 'conversation.dart';
+import 'live_asr.dart';
 import 'xfyun_speech.dart' show SpeechException;
 
 /// 一轮语音对话的结果。
@@ -45,19 +46,26 @@ class SpeechPipeline {
   final SpeechPort speech;
   final Translator translator;
 
+  /// [session] 为「边录边传」的识别会话；为空时仍走「录完再传」老路。
+  ///
+  /// [onHeard] / [onText] 是**低延迟回调**：识别一有结果、译文一返回就先
+  /// 交给页面上屏，合成与朗读在回调之后继续跑。用户看到文字的时间从此不再
+  /// 包含 TTS 那一两秒；朗读失败也只降级成提示，不会吞掉文字。
   Future<SpeechTurn> run(
     Uint8List audio,
-    TranslationDirection direction,
-  ) async {
-    final String heard = (await speech.listen(audio, direction.source)).trim();
-    if (heard.isEmpty) {
-      throw const SpeechException('没有识别到语音，请靠近麦克风再试');
-    }
+    TranslationDirection direction, {
+    LiveAsrSession? session,
+    void Function(String heard)? onHeard,
+    void Function(String heard, Translation translation)? onText,
+  }) async {
+    final String heard = await _hear(audio, direction.source, session);
+    onHeard?.call(heard);
     final Translation result = await translator.translate(
       heard,
       direction.source,
       direction.target,
     );
+    onText?.call(heard, result);
     if (!result.found) {
       return SpeechTurn(
         heard: heard,
@@ -84,5 +92,33 @@ class SpeechPipeline {
       audio: spoken,
       speakError: speakError,
     );
+  }
+
+  /// 边录边传优先；会话没连上、或云端一个字都没回时，拿完整 PCM 重跑老路。
+  ///
+  /// 这条兜底很要紧：真机网络千差万别，新链路万一丢了前几个字，用户最多
+  /// 多等一次上传，而绝不会又遇到「说完了却识别不到声音」。老路内部对空
+  /// 识别有带音频时长的诊断文案，会原样冒到界面上。
+  Future<String> _hear(
+    Uint8List audio,
+    Language source,
+    LiveAsrSession? session,
+  ) async {
+    if (session != null) {
+      try {
+        final String live = (await session.finish()).trim();
+        if (live.isNotEmpty) {
+          return live;
+        }
+      } on Object catch (_) {
+        // 不把失败原因写进 lastDiagnostic：老路会自己写更准确的诊断，
+        // 覆盖掉反而让界面提示变模糊。
+      }
+    }
+    final String heard = (await speech.listen(audio, source)).trim();
+    if (heard.isEmpty) {
+      throw const SpeechException('没有识别到语音，请靠近麦克风再试');
+    }
+    return heard;
   }
 }

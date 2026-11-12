@@ -12,6 +12,7 @@
 // 真实连通性由 CI 的 live check 用 Secret 验证。
 
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io' show WebSocket;
 import 'dart:typed_data';
@@ -19,6 +20,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import 'conversation.dart';
+import 'live_asr.dart';
 import 'speech_config.dart';
 
 /// 语音链路异常。
@@ -77,6 +79,23 @@ Future<XfyunSocket> openXfyunSocket(Uri uri) async {
         '连接讯飞服务超时（12 秒）· 检查手机网络或关闭全局代理'),
   );
   return DartIoXfyunSocket(socket);
+}
+
+/// 结果已经拿到之后，关连接只是一次后台清理，不该拖着整轮响应。
+///
+/// dart:io 的 `WebSocket.close()` 要等对端回 close frame，服务端不回时原先
+/// 3 秒的上限会在 ASR、TTS 各白等一次（一轮最多 6 秒）。压到 400ms：假 socket
+/// 的 close 本来就是同步完成，单测断言不受影响；真机上多出来的时间用户
+/// 再也感觉不到。
+Future<void> closeXfyunSocket(XfyunSocket socket) async {
+  try {
+    await socket.close().timeout(
+          const Duration(milliseconds: 400),
+          onTimeout: () {},
+        );
+  } on Object catch (_) {
+    // 连接已被对端关掉、或平台层抛错，都不影响这一轮的识别 / 合成结果。
+  }
 }
 
 /// RFC1123 GMT 时间，服务端允许 300 秒时钟偏移。
@@ -431,7 +450,7 @@ String ttsHint(int code) {
 }
 
 /// 讯飞语音端口：实现 conversation.dart 里的 SpeechPort 接口。
-class XfyunSpeechPort implements SpeechPort {
+class XfyunSpeechPort implements SpeechPort, LiveSpeechPort {
   XfyunSpeechPort({
     SpeechConfig? config,
     XfyunSocketOpener? opener,
@@ -487,6 +506,28 @@ class XfyunSpeechPort implements SpeechPort {
 
   String _languageCode(Language language) =>
       language == Language.uyghur ? 'ug' : 'zh';
+
+  /// 开一轮「边录边传」的识别会话。
+  ///
+  /// **同步**返回会话对象：按下说话那一刻必须先 startRecord，等 TLS 握手
+  /// 完成再开录的话，用户开口的前几百毫秒会整段丢掉。建连在会话内部异步
+  /// 进行，期间的 PCM 先排队，连上后按 40ms 实时率补发。
+  @override
+  LiveAsrSession openLiveAsr(Language language) {
+    config.lastDiagnostic = '';
+    Future<XfyunSocket> connecting;
+    try {
+      connecting = opener(_uri(isAsr: true, date: dateBuilder()));
+    } on Object catch (error) {
+      connecting = Future<XfyunSocket>.error(error);
+    }
+    return _LiveAsrSession(
+      connecting: connecting,
+      appId: config.appId.trim(),
+      ln: _languageCode(language),
+      frameDelay: frameDelay,
+    );
+  }
 
   @override
   Future<String> listen(Uint8List audio, Language language) async {
@@ -573,10 +614,8 @@ class XfyunSpeechPort implements SpeechPort {
     } finally {
       await subscription?.cancel();
       // close() 要等服务端回 close frame，服务端不回时不能把整轮结果一起拖死。
-      await socket.close().timeout(
-            const Duration(seconds: 3),
-            onTimeout: () {},
-          );
+      // 上限已从 3 秒压到 400ms：结果到手后再多等就是纯浪费。
+      await closeXfyunSocket(socket);
     }
   }
 
@@ -645,10 +684,7 @@ class XfyunSpeechPort implements SpeechPort {
       rethrow;
     } finally {
       await subscription?.cancel();
-      await socket.close().timeout(
-            const Duration(seconds: 3),
-            onTimeout: () {},
-          );
+      await closeXfyunSocket(socket);
     }
   }
 
@@ -658,5 +694,235 @@ class XfyunSpeechPort implements SpeechPort {
     final int marker = raw.indexOf('wss://');
     final String clean = marker >= 0 ? raw.substring(0, marker).trim() : raw;
     return clean.length <= 200 ? clean : '${clean.substring(0, 200)}…';
+  }
+}
+
+/// 一轮「边录边传」的识别会话。
+///
+/// 关键取舍：**发帧速率仍是官方要求的 40ms / 1280 字节（1x 实时率）**，只是
+/// 把这段等待从「松手之后」挪到「说话过程中」。曾经把间隔压到 10ms 全速灌，
+/// 真机上服务端只吃到前半段、返回空识别结果 —— 那个坑不能再踩一遍。
+///
+/// 说 6 秒话，老链路松手后要先花 6 秒把音频传完才出字；这里松手时音频
+/// 基本已经发完，只剩一次云端返回 + 一次翻译。
+class _LiveAsrSession implements LiveAsrSession {
+  _LiveAsrSession({
+    required Future<XfyunSocket> connecting,
+    required String appId,
+    required String ln,
+    required this.frameDelay,
+  })  : _appId = appId,
+        _ln = ln {
+    // 云端可能在录音途中就报错；先挂一个兜底 listener 防 unhandled async
+    // error，finish() await 同一个 future 时错误照常抛给上层。
+    unawaited(_done.future.then<void>(
+      (String _) {},
+      onError: (Object error, StackTrace stack) {},
+    ));
+    unawaited(_connect(connecting));
+  }
+
+  /// 一帧 1280 字节 = 16k/16bit/单声道的 40ms，与 buildAsrAudioFrames 一致。
+  static const int _frameBytes = 1280;
+
+  final String _appId;
+  final String _ln;
+  final Duration frameDelay;
+
+  final Completer<void> _ready = Completer<void>();
+  final Completer<String> _done = Completer<String>();
+  final ListQueue<String> _frames = ListQueue<String>();
+  final BytesBuilder _remainder = BytesBuilder();
+  final StringBuffer _transcript = StringBuffer();
+
+  XfyunSocket? _socket;
+  StreamSubscription<String>? _subscription;
+  Object? _connectError;
+  bool _cancelled = false;
+  bool _finished = false;
+  bool _firstSent = false;
+  bool _pumping = false;
+
+  /// 时间轴起点放在「泵第一次能发帧」时，而不是第一次 add 时。否则建连
+  /// 慢了 300ms，泵一启动会把积压的 7 帧一股脑倒出去，又变成超速灌帧。
+  DateTime? _timelineStart;
+  int _sentFrames = 0;
+  int _seq = 2; // 首帧算第 1 帧，与 listen() 老链路的 seq 对齐。
+  Future<void>? _pump;
+
+  Future<void> _connect(Future<XfyunSocket> connecting) async {
+    try {
+      final XfyunSocket socket = await connecting;
+      if (_cancelled) {
+        await closeXfyunSocket(socket);
+        return;
+      }
+      _socket = socket;
+      _subscription = socket.messages.listen(
+        _onMessage,
+        onError: (Object error) {
+          if (!_done.isCompleted) {
+            _done.completeError(error);
+          }
+        },
+      );
+      _startPump();
+    } on Object catch (error) {
+      // 连接失败不打断录音：页面会把整段 PCM 交给 listen() 老路重试。
+      _connectError = error;
+    } finally {
+      if (!_ready.isCompleted) {
+        _ready.complete();
+      }
+    }
+  }
+
+  void _onMessage(String message) {
+    final AsrFrame frame = parseAsrMessage(message);
+    if (frame.code != 0 && !_done.isCompleted) {
+      _done.completeError(
+          SpeechException('识别失败 ${frame.code}: ${frame.message}'));
+      return;
+    }
+    _transcript.write(frame.text);
+    if (frame.done && !_done.isCompleted) {
+      _done.complete(_transcript.toString());
+    }
+  }
+
+  @override
+  void add(Uint8List pcm) {
+    if (_cancelled || _finished || pcm.isEmpty) {
+      return;
+    }
+    _remainder.add(pcm);
+    final Uint8List buffered = _remainder.takeBytes();
+    int offset = 0;
+    while (buffered.lengthInBytes - offset >= _frameBytes) {
+      _frames.addLast(base64.encode(
+          Uint8List.sublistView(buffered, offset, offset + _frameBytes)));
+      offset += _frameBytes;
+    }
+    if (offset < buffered.lengthInBytes) {
+      _remainder.add(Uint8List.sublistView(buffered, offset));
+    }
+    if (_frames.isNotEmpty) {
+      _startPump();
+    }
+  }
+
+  void _startPump() {
+    if (_pumping || _cancelled || _socket == null || _frames.isEmpty) {
+      return;
+    }
+    _pumping = true;
+    _pump = _drain();
+  }
+
+  /// 按时间轴逐帧发：`start + n*40ms`，而不是每帧 sleep 40ms 后再发 ——
+  /// 后者会把 Timer 本身的抖动一帧帧累加，长句末尾会越拖越久。
+  Future<void> _drain() async {
+    try {
+      final DateTime start = _timelineStart ?? DateTime.now();
+      _timelineStart = start;
+      while (_frames.isNotEmpty && !_cancelled) {
+        final DateTime target = start.add(frameDelay * _sentFrames);
+        final Duration wait = target.difference(DateTime.now());
+        if (wait > Duration.zero) {
+          await Future<void>.delayed(wait);
+        }
+        if (_cancelled || _socket == null || _frames.isEmpty) {
+          break;
+        }
+        _sendData(_frames.removeFirst());
+        _sentFrames += 1;
+      }
+    } finally {
+      _pumping = false;
+    }
+  }
+
+  void _sendData(String data) {
+    final XfyunSocket? socket = _socket;
+    if (socket == null) {
+      return;
+    }
+    if (!_firstSent) {
+      _firstSent = true;
+      socket.send(buildAsrFirstFrame(appId: _appId, ln: _ln, audio: data));
+    } else {
+      socket.send(buildAsrAudioFrame(
+        appId: _appId,
+        status: 1,
+        audio: data,
+        seq: _seq++,
+      ));
+    }
+  }
+
+  @override
+  Future<String> finish() async {
+    if (_cancelled) {
+      throw const SpeechException('录音已取消');
+    }
+    _finished = true;
+    await _ready.future;
+    final Object? connectError = _connectError;
+    if (connectError != null) {
+      throw SpeechException(
+          '识别连接失败：${XfyunSpeechPort._diagnose(connectError)}');
+    }
+    final XfyunSocket? socket = _socket;
+    if (socket == null) {
+      throw const SpeechException('识别连接未建立');
+    }
+    try {
+      // 连接慢时可能还没起过泵，这里补一次，保证积压帧先排空再发结束帧。
+      _startPump();
+      final Future<void>? pump = _pump;
+      if (pump != null) {
+        await pump;
+      }
+      if (!_firstSent) {
+        // 一帧都没攒够（极短录音）：也把业务参数发过去，云端才认得会话。
+        _sendData('');
+      }
+      final Uint8List tail = _remainder.takeBytes();
+      if (tail.isNotEmpty) {
+        _sendData(base64.encode(tail));
+      }
+      socket.send(buildAsrAudioFrame(
+        appId: _appId,
+        status: 2,
+        audio: '',
+        seq: _seq++,
+      ));
+      return (await _done.future.timeout(
+        const Duration(seconds: 25),
+        onTimeout: () =>
+            throw const SpeechException('识别超时（网络或服务端无响应）'),
+      ))
+          .trim();
+    } finally {
+      await _subscription?.cancel();
+      await closeXfyunSocket(socket);
+    }
+  }
+
+  @override
+  Future<void> cancel() async {
+    _cancelled = true;
+    _frames.clear();
+    await _subscription?.cancel();
+    _subscription = null;
+    final XfyunSocket? socket = _socket;
+    if (socket != null) {
+      await closeXfyunSocket(socket);
+    }
+    // 连接还没建好时，_connect 会看到 _cancelled 并自行关闭；这里只保证
+    // 任何还在 await 的地方都能立刻结束。
+    if (!_done.isCompleted) {
+      _done.complete('');
+    }
   }
 }

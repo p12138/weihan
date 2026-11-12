@@ -4,10 +4,11 @@
 import 'dart:typed_data';
 
 import 'conversation.dart';
+import 'live_asr.dart';
 import 'speech_config.dart';
 import 'xfyun_speech.dart';
 
-class ConfigurableSpeechPort implements SpeechPort {
+class ConfigurableSpeechPort implements SpeechPort, LiveSpeechPort {
   const ConfigurableSpeechPort();
 
   @override
@@ -20,4 +21,10 @@ class ConfigurableSpeechPort implements SpeechPort {
   @override
   Future<Uint8List> speak(String text, Language language) =>
       XfyunSpeechPort(config: speechConfig).speak(text, language);
+
+  /// 按住说话时走边录边传；会话建不起来或云端没认出字时，
+  /// SpeechPipeline 会自动拿完整 PCM 回到上面的 listen() 老路。
+  @override
+  LiveAsrSession openLiveAsr(Language language) =>
+      XfyunSpeechPort(config: speechConfig).openLiveAsr(language);
 }

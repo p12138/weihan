@@ -17,6 +17,8 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:record/record.dart';
 
+import 'live_asr.dart';
+
 abstract class AudioPort {
   Future<bool> hasPermission();
 
@@ -103,7 +105,7 @@ Future<bool> primeMicrophonePermission() async {
   return granted;
 }
 
-class DeviceAudioPort implements AudioPort {
+class DeviceAudioPort implements AudioPort, ChunkedAudioPort {
   DeviceAudioPort({AudioRecorder? recorder, AudioPlayer? player})
       : _recorder = recorder ?? AudioRecorder(),
         _player = player ?? AudioPlayer();
@@ -114,6 +116,14 @@ class DeviceAudioPort implements AudioPort {
 
   StreamSubscription<Uint8List>? _subscription;
   final StreamController<double> _levels = StreamController<double>.broadcast();
+
+  /// 边录边传用：把录音流原样广播出去，页面接上 ASR 会话后，说话的同时
+  /// 音频就已经在上传了。broadcast 保证先订阅再 startRecord 也漏不掉开头。
+  /// sync: true —— 尾帧必须在 stopRecord() 返回之前就已经交到 ASR 会话手上。
+  /// 默认异步投递会把它压进微任务队列，松手后 finish() 先跑就会漏掉最后几个字。
+  final StreamController<Uint8List> _chunks =
+      StreamController<Uint8List>.broadcast(sync: true);
+
   BytesBuilder? _buffer;
   double _peak = 0;
   DateTime? _startedAt;
@@ -128,6 +138,9 @@ class DeviceAudioPort implements AudioPort {
 
   @override
   Stream<double> get levels => _levels.stream;
+
+  @override
+  Stream<Uint8List> get pcmChunks => _chunks.stream;
 
   @override
   String get recordingDiagnostics => _diagnostics;
@@ -160,6 +173,11 @@ class DeviceAudioPort implements AudioPort {
         }
         if (!_levels.isClosed) {
           _levels.add(level);
+        }
+        // 同一块 PCM 交给 ASR 会话按 40ms 实时率排队上传。广播流没有订阅者时
+        // 这一句就是空转，不会缓冲任何数据。
+        if (!_chunks.isClosed && _chunks.hasListener) {
+          _chunks.add(chunk);
         }
       },
       onError: (Object error) {
@@ -258,6 +276,9 @@ class DeviceAudioPort implements AudioPort {
     _subscription = null;
     if (!_levels.isClosed) {
       _levels.close();
+    }
+    if (!_chunks.isClosed) {
+      _chunks.close();
     }
   }
 }

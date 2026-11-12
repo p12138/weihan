@@ -10,6 +10,7 @@ import 'default_speech.dart';
 import 'default_translator.dart';
 import 'device_audio.dart';
 import 'glass.dart';
+import 'live_asr.dart';
 import 'palette_controller.dart';
 import 'speech_config.dart';
 import 'speech_pipeline.dart';
@@ -68,6 +69,15 @@ class _ConversationPageState extends State<ConversationPage> {
   /// 定时器在 widget 测试里会一直挂着，pumpAndSettle 永远等不到收敛。
   final Stopwatch _recordWatch = Stopwatch();
 
+  /// 边录边传：按下说话时就把识别会话建起来，说话过程中同步上传 PCM。
+  /// 真机实现支持这两个可选能力；测试里的假实现走原来的「录完再传」。
+  LiveAsrSession? _liveSession;
+  StreamSubscription<Uint8List>? _chunkSubscription;
+
+  /// 按下一刻的语言方向快照。会话的首帧已经带着源语言发上去了，
+  /// 松手时必须用同一份方向，避免录音中途切方向造成「识别 A、按 B 翻译」。
+  TranslationDirection? _voiceDirection;
+
   int _nextId = 0;
   AudioPort? _audioPort;
   late final SpeechPipeline _pipeline = SpeechPipeline(
@@ -79,6 +89,7 @@ class _ConversationPageState extends State<ConversationPage> {
   void dispose() {
     _levelSubscription?.cancel();
     _levelSubscription = null;
+    unawaited(_discardLiveSession());
     _audioPort?.dispose();
     _controller.dispose();
     super.dispose();
@@ -161,6 +172,9 @@ class _ConversationPageState extends State<ConversationPage> {
       return;
     }
     _starting = true;
+    _voiceDirection = _state.direction;
+    // 会话同步返回、建连在后台跑：先开录，绝不为了等 TLS 握手丢掉开口几个字。
+    _openLiveSession();
     try {
       final bool granted = await _audio().hasPermission();
       if (!mounted) {
@@ -200,6 +214,73 @@ class _ConversationPageState extends State<ConversationPage> {
       setState(() => _notice = '无法开始录音：${_brief(error.toString())}');
     } finally {
       _starting = false;
+      // 权限被拒 / 启动异常 / 按得太快：没进录音态就不能把会话留着，
+      // 否则那条 wss 连接会一直挂到 App 退出。
+      if (!_recording) {
+        unawaited(_discardLiveSession());
+      }
+    }
+  }
+
+  /// 开一轮边录边传：真机端口同时具备「能开会话」+「能吐 PCM 增量块」时启用。
+  ///
+  /// 两个能力都是可选接口，测试里的假实现一个都没有 —— 它们继续走老路，
+  /// 断言与耗时行为完全不变，也不用为了新功能去改一堆替身。
+  void _openLiveSession() {
+    _chunkSubscription?.cancel();
+    _chunkSubscription = null;
+    _liveSession = null;
+
+    final SpeechPort speech = widget.speech;
+    final AudioPort port = _audio();
+    // 拆成两个判断，Dart 的类型提升才一定生效。
+    if (speech is! LiveSpeechPort) {
+      return;
+    }
+    if (port is! ChunkedAudioPort) {
+      return;
+    }
+    try {
+      _liveSession = speech.openLiveAsr(_state.direction.source);
+    } on Object catch (error) {
+      debugPrint('边录边传未启用，改用录完再传：$error');
+      return;
+    }
+    _chunkSubscription = port.pcmChunks.listen(
+      (Uint8List chunk) {
+        final LiveAsrSession? session = _liveSession;
+        if (session == null) {
+          return;
+        }
+        try {
+          session.add(chunk);
+        } on Object catch (error) {
+          // sync 广播流里 listener 抛错会冒泡回录音回调，这里就地消化，
+          // 最坏结果是这一轮云端没认出字，pipeline 会自动整段重传。
+          debugPrint('实时上传分帧失败：$error');
+        }
+      },
+      onError: (Object error) {
+        debugPrint('录音增量流错误：$error');
+      },
+    );
+  }
+
+  /// 丢弃会话与增量流订阅。幂等，快速松手 / 取消 / 启动失败都会调。
+  Future<void> _discardLiveSession() async {
+    final StreamSubscription<Uint8List>? chunks = _chunkSubscription;
+    _chunkSubscription = null;
+    if (chunks != null) {
+      await chunks.cancel();
+    }
+    final LiveAsrSession? session = _liveSession;
+    _liveSession = null;
+    if (session != null) {
+      try {
+        await session.cancel();
+      } on Object catch (error) {
+        debugPrint('丢弃识别会话失败：$error');
+      }
     }
   }
 
@@ -242,14 +323,13 @@ class _ConversationPageState extends State<ConversationPage> {
   /// 说错了重说一遍不该产生一条错误消息，也不该白跑一次云端计费。
   Future<void> _cancelVoice() async {
     _stopLevels();
-    if (!mounted) {
-      return;
+    if (mounted) {
+      setState(() {
+        _recording = false;
+        _busy = false;
+        _notice = '录音已取消 · 没有发送';
+      });
     }
-    setState(() {
-      _recording = false;
-      _busy = false;
-      _notice = '录音已取消 · 没有发送';
-    });
     await _stopSilently();
   }
 
@@ -261,6 +341,8 @@ class _ConversationPageState extends State<ConversationPage> {
     } on Object catch (error) {
       debugPrint('丢弃录音失败：$error');
     }
+    // 取消时不发结束帧、不等云端，会话立刻关掉，也不产生一次识别调用。
+    await _discardLiveSession();
   }
 
   /// 订阅实时音量。没有这条流（假实现 / 平台不支持）时什么也不做，
@@ -292,6 +374,10 @@ class _ConversationPageState extends State<ConversationPage> {
     _level = 0;
   }
 
+  /// 松手后的编排：停录音 → 把尾帧交给会话 → 识别 → 翻译 → 朗读。
+  ///
+  /// 文字一返回就上屏（onText），合成与播放留在后面继续跑：用户等的是
+  /// 「听懂对方说了什么」，不该连 TTS 那一两秒也一起等。
   Future<void> _finishVoice() async {
     _stopLevels();
     setState(() {
@@ -299,12 +385,25 @@ class _ConversationPageState extends State<ConversationPage> {
       _busy = true;
       _notice = '正在识别与翻译…';
     });
-    final TranslationDirection direction = _state.direction;
+    // 会话首帧已经带着源语言发上去了，方向必须用按下那一刻的快照。
+    final TranslationDirection direction = _voiceDirection ?? _state.direction;
     String recordingInfo = '';
     try {
       final Uint8List pcm = await _audio().stopRecord();
       recordingInfo = _audio().recordingDiagnostics;
+      // stopRecord 内部等过 60ms 尾帧；这里再排一次微任务，确保增量流把
+      // 最后一块 PCM 交到会话手上，才断开订阅、才发结束帧。
+      await Future<void>.delayed(Duration.zero);
+      final StreamSubscription<Uint8List>? chunks = _chunkSubscription;
+      _chunkSubscription = null;
+      await chunks?.cancel();
+      // 先把会话从字段上摘下来：pipeline 还在合成朗读时用户可能又按住说话，
+      // 新一轮不该被这一轮的收尾误伤。
+      final LiveAsrSession? session = _liveSession;
+      _liveSession = null;
+
       if (pcm.isEmpty) {
+        await session?.cancel();
         if (!mounted) {
           return;
         }
@@ -316,28 +415,45 @@ class _ConversationPageState extends State<ConversationPage> {
         });
         return;
       }
-      final SpeechTurn turn = await _pipeline.run(pcm, direction);
+
+      final SpeechTurn turn = await _pipeline.run(
+        pcm,
+        direction,
+        session: session,
+        onHeard: (String heard) {
+          if (!mounted) {
+            return;
+          }
+          setState(() => _notice = '识别到「$heard」· 正在翻译…');
+        },
+        onText: (String heard, Translation result) {
+          if (!mounted) {
+            return;
+          }
+          setState(() {
+            // 文字到手就解锁按钮：朗读还在后台合成，不挡着说下一句。
+            _busy = false;
+            _state = _state.add(_newMessage(heard, direction.source, true));
+            if (result.found) {
+              _state = _state.add(
+                _newMessage(result.text, direction.target, false),
+              );
+              _notice = '识别到「$heard」· 由 ${result.provider} 翻译';
+            } else {
+              _notice = '识别到「$heard」· 但未返回译文';
+            }
+          });
+        },
+      );
       if (!mounted) {
         return;
       }
       final String? speakError = turn.speakError;
-      setState(() {
-        _busy = false;
-        _state = _state.add(_newMessage(turn.heard, direction.source, true));
-        if (turn.translation.found) {
-          _state = _state.add(
-            _newMessage(turn.translation.text, direction.target, false),
-          );
-          _notice = '识别到「${turn.heard}」· 由 ${turn.translation.provider} 翻译';
-          if (speakError != null) {
-            // 文字已经可用，只是没合成出音频：把原因摊开说，别让用户
-            // 只看到「没有声音」而在设置页里瞎试。
-            _notice = '$_notice · 朗读失败：${_brief(speakError)}';
-          }
-        } else {
-          _notice = '识别到「${turn.heard}」· 但未返回译文';
-        }
-      });
+      if (speakError != null) {
+        // 文字已经可用，只是没合成出音频：把原因摊开说，别让用户
+        // 只看到「没有声音」而在设置页里瞎试。
+        setState(() => _notice = '$_notice · 朗读失败：${_brief(speakError)}');
+      }
       if (turn.hasAudio) {
         try {
           await _audio().play(turn.audio);
@@ -351,6 +467,7 @@ class _ConversationPageState extends State<ConversationPage> {
         }
       }
     } on Object catch (error) {
+      await _discardLiveSession();
       if (!mounted) {
         return;
       }
@@ -577,11 +694,13 @@ class _Header extends StatelessWidget {
                 ),
                 SizedBox(height: 3),
                 Text(
-                  '让沟通不再有障碍',
+                  '让您和民族朋友的沟通不再有障碍',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     color: Color(0xCCFFFFFF),
-                    fontSize: 11.5,
-                    letterSpacing: 0.4,
+                    fontSize: 11,
+                    letterSpacing: 0.2,
                   ),
                 ),
               ],
@@ -890,7 +1009,7 @@ class _EmptyState extends StatelessWidget {
                     borderRadius: BorderRadius.circular(14),
                   ),
                   child: const Text(
-                    '让您和您的民族朋友沟通不再有障碍',
+                    '让您和民族朋友的沟通不再有障碍',
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 13.5,
