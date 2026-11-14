@@ -706,7 +706,7 @@ class XfyunSpeechPort implements SpeechPort, LiveSpeechPort {
 ///
 /// 说 6 秒话，老链路松手后要先花 6 秒把音频传完才出字；这里松手时音频
 /// 基本已经发完，只剩一次云端返回 + 一次翻译。
-class _LiveAsrSession implements LiveAsrSession {
+class _LiveAsrSession implements LiveAsrSession, PartialAsrSession {
   _LiveAsrSession({
     required Future<XfyunSocket> connecting,
     required String appId,
@@ -726,6 +726,10 @@ class _LiveAsrSession implements LiveAsrSession {
   /// 一帧 1280 字节 = 16k/16bit/单声道的 40ms，与 buildAsrAudioFrames 一致。
   static const int _frameBytes = 1280;
 
+  /// 建连慢 / 服务端半死时最多积压 20 秒音频；再多就丢最旧的并重置时间轴，
+  /// 否则积压永远追不上实时，字幕会越拖越远。按住说话一轮通常远小于此值。
+  static const int _maxBacklogFrames = 500;
+
   final String _appId;
   final String _ln;
   final Duration frameDelay;
@@ -743,6 +747,28 @@ class _LiveAsrSession implements LiveAsrSession {
   bool _finished = false;
   bool _firstSent = false;
   bool _pumping = false;
+
+  /// 服务端已经给出 status=2。之后不再收音频、不再发帧。
+  bool _ended = false;
+
+  void Function(String accumulated)? _onPartial;
+  void Function()? _onDone;
+  void Function(Object error)? _onFailure;
+
+  @override
+  void setPartialListener(void Function(String accumulated)? listener) {
+    _onPartial = listener;
+  }
+
+  @override
+  void setDoneListener(void Function()? listener) {
+    _onDone = listener;
+  }
+
+  @override
+  void setFailureListener(void Function(Object error)? listener) {
+    _onFailure = listener;
+  }
 
   /// 时间轴起点放在「泵第一次能发帧」时，而不是第一次 add 时。否则建连
   /// 慢了 300ms，泵一启动会把积压的 7 帧一股脑倒出去，又变成超速灌帧。
@@ -762,15 +788,19 @@ class _LiveAsrSession implements LiveAsrSession {
       _subscription = socket.messages.listen(
         _onMessage,
         onError: (Object error) {
+          _ended = true;
           if (!_done.isCompleted) {
             _done.completeError(error);
           }
+          _onFailure?.call(error);
         },
       );
       _startPump();
     } on Object catch (error) {
       // 连接失败不打断录音：页面会把整段 PCM 交给 listen() 老路重试。
       _connectError = error;
+      _ended = true;
+      _onFailure?.call(error);
     } finally {
       if (!_ready.isCompleted) {
         _ready.complete();
@@ -779,21 +809,55 @@ class _LiveAsrSession implements LiveAsrSession {
   }
 
   void _onMessage(String message) {
-    final AsrFrame frame = parseAsrMessage(message);
-    if (frame.code != 0 && !_done.isCompleted) {
-      _done.completeError(
-          SpeechException('识别失败 ${frame.code}: ${frame.message}'));
+    if (_cancelled) {
       return;
     }
-    _transcript.write(frame.text);
-    if (frame.done && !_done.isCompleted) {
-      _done.complete(_transcript.toString());
+    final AsrFrame frame = parseAsrMessage(message);
+    if (frame.code != 0) {
+      _ended = true;
+      final SpeechException error =
+          SpeechException('识别失败 ${frame.code}: ${frame.message}');
+      if (!_done.isCompleted) {
+        _done.completeError(error);
+      }
+      _onFailure?.call(error);
+      return;
     }
+    _appendFrame(frame.text);
+    if (frame.done) {
+      _ended = true;
+      _frames.clear();
+      if (!_done.isCompleted) {
+        _done.complete(_transcript.toString());
+      }
+      _onDone?.call();
+    }
+  }
+
+  /// 追加一帧文本，并把累计文本回调给上层。
+  ///
+  /// 官方协议未开动态修正时是「只追加」；但网关换版 / 维语模型曾出现
+  /// 「每帧都是整段累计」的情况，盲目拼接会得到「你好你好你好」。
+  /// 判据用「整段已有文本」做前缀比较：累计型必然以已有全文开头，追加型
+  /// 只有极短的前几个字才可能碰巧命中，比逐帧比较稳得多。
+  void _appendFrame(String text) {
+    if (text.isEmpty) {
+      return;
+    }
+    final String current = _transcript.toString();
+    final bool cumulative = current.isNotEmpty && text.startsWith(current);
+    if (cumulative) {
+      _transcript.clear();
+      _transcript.write(text);
+    } else {
+      _transcript.write(text);
+    }
+    _onPartial?.call(_transcript.toString());
   }
 
   @override
   void add(Uint8List pcm) {
-    if (_cancelled || _finished || pcm.isEmpty) {
+    if (_cancelled || _finished || _ended || pcm.isEmpty) {
       return;
     }
     _remainder.add(pcm);
@@ -806,6 +870,15 @@ class _LiveAsrSession implements LiveAsrSession {
     }
     if (offset < buffered.lengthInBytes) {
       _remainder.add(Uint8List.sublistView(buffered, offset));
+    }
+    if (_frames.length > _maxBacklogFrames) {
+      while (_frames.length > _maxBacklogFrames) {
+        _frames.removeFirst();
+      }
+      // 丢掉最旧音频后时间轴必须重起，否则下一轮会把积压的帧按旧时间
+      // 一股脑倒出去（又变成超速灌帧）。
+      _timelineStart = null;
+      _sentFrames = 0;
     }
     if (_frames.isNotEmpty) {
       _startPump();
@@ -824,15 +897,16 @@ class _LiveAsrSession implements LiveAsrSession {
   /// 后者会把 Timer 本身的抖动一帧帧累加，长句末尾会越拖越久。
   Future<void> _drain() async {
     try {
-      final DateTime start = _timelineStart ?? DateTime.now();
-      _timelineStart = start;
-      while (_frames.isNotEmpty && !_cancelled) {
+      while (_frames.isNotEmpty && !_cancelled && !_ended) {
+        // 每轮重新读起点：积压裁剪会把时间轴重置。
+        final DateTime start = _timelineStart ?? DateTime.now();
+        _timelineStart = start;
         final DateTime target = start.add(frameDelay * _sentFrames);
         final Duration wait = target.difference(DateTime.now());
         if (wait > Duration.zero) {
           await Future<void>.delayed(wait);
         }
-        if (_cancelled || _socket == null || _frames.isEmpty) {
+        if (_cancelled || _ended || _socket == null || _frames.isEmpty) {
           break;
         }
         _sendData(_frames.removeFirst());
@@ -845,19 +919,26 @@ class _LiveAsrSession implements LiveAsrSession {
 
   void _sendData(String data) {
     final XfyunSocket? socket = _socket;
-    if (socket == null) {
+    if (socket == null || _ended) {
       return;
     }
-    if (!_firstSent) {
-      _firstSent = true;
-      socket.send(buildAsrFirstFrame(appId: _appId, ln: _ln, audio: data));
-    } else {
-      socket.send(buildAsrAudioFrame(
-        appId: _appId,
-        status: 1,
-        audio: data,
-        seq: _seq++,
-      ));
+    try {
+      if (!_firstSent) {
+        _firstSent = true;
+        socket.send(buildAsrFirstFrame(appId: _appId, ln: _ln, audio: data));
+      } else {
+        socket.send(buildAsrAudioFrame(
+          appId: _appId,
+          status: 1,
+          audio: data,
+          seq: _seq++,
+        ));
+      }
+    } on Object catch (error) {
+      // 服务端提前关闭时 send 会抛；这里是未 await 的泵，不能让它变成
+      // unhandled async error，转成失败回调后停止继续发。
+      _ended = true;
+      _onFailure?.call(error);
     }
   }
 
@@ -878,6 +959,13 @@ class _LiveAsrSession implements LiveAsrSession {
       throw const SpeechException('识别连接未建立');
     }
     try {
+      // 服务端已经 status=2：不再补发任何帧，直接拿它给的结果。
+      if (_ended) {
+        if (!_done.isCompleted) {
+          throw const SpeechException('识别连接已中断');
+        }
+        return (await _done.future).trim();
+      }
       // 连接慢时可能还没起过泵，这里补一次，保证积压帧先排空再发结束帧。
       _startPump();
       final Future<void>? pump = _pump;
@@ -892,12 +980,17 @@ class _LiveAsrSession implements LiveAsrSession {
       if (tail.isNotEmpty) {
         _sendData(base64.encode(tail));
       }
-      socket.send(buildAsrAudioFrame(
-        appId: _appId,
-        status: 2,
-        audio: '',
-        seq: _seq++,
-      ));
+      try {
+        socket.send(buildAsrAudioFrame(
+          appId: _appId,
+          status: 2,
+          audio: '',
+          seq: _seq++,
+        ));
+      } on Object catch (error) {
+        throw SpeechException(
+            '识别连接已中断：${XfyunSpeechPort._diagnose(error)}');
+      }
       return (await _done.future.timeout(
         const Duration(seconds: 25),
         onTimeout: () =>
@@ -913,6 +1006,10 @@ class _LiveAsrSession implements LiveAsrSession {
   @override
   Future<void> cancel() async {
     _cancelled = true;
+    _ended = true;
+    _onPartial = null;
+    _onDone = null;
+    _onFailure = null;
     _frames.clear();
     await _subscription?.cancel();
     _subscription = null;

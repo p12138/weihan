@@ -95,6 +95,44 @@ class _NeverCloseSocket implements XfyunSocket {
   Future<void> close() => Completer<void>().future;
 }
 
+/// 每收到一个中间帧就回一个词，收到结束帧再回整句。
+/// 用来验证「录音过程中就有累计文本」以及追加语义。
+class _PartialSocket implements XfyunSocket {
+  _PartialSocket(this.words);
+
+  final List<String> words;
+  final List<String> sent = <String>[];
+  final StreamController<String> _controller = StreamController<String>();
+  int _spoken = 0;
+  bool closed = false;
+
+  @override
+  Stream<String> get messages => _controller.stream;
+
+  @override
+  void send(String text) {
+    sent.add(text);
+    final Map<String, dynamic> frame =
+        jsonDecode(text) as Map<String, dynamic>;
+    final Map<String, dynamic> header =
+        frame['header'] as Map<String, dynamic>;
+    final int status = header['status'] as int;
+    if (status == 1) {
+      final int index = _spoken < words.length ? _spoken : words.length - 1;
+      _spoken += 1;
+      _controller.add(_asrFrame(_encodedWords(<String>[words[index]]), 1));
+    } else if (status == 2) {
+      _controller.add(_asrFrame(_encodedWords(words), 2));
+    }
+  }
+
+  @override
+  Future<void> close() async {
+    closed = true;
+    await _controller.close();
+  }
+}
+
 Map<String, dynamic> _frame(String raw) =>
     jsonDecode(raw) as Map<String, dynamic>;
 
@@ -205,5 +243,48 @@ void main() {
     watch.stop();
     expect(watch.elapsedMilliseconds, lessThan(1500),
         reason: '每轮 ASR + TTS 各一次，白等 3 秒会直接拖慢整轮翻译');
+  });
+
+  test('录音过程中回调累计中间文本，定稿仍是完整结果', () async {
+    final _PartialSocket socket = _PartialSocket(<String>['你', '好', '吗']);
+    final XfyunSpeechPort port = XfyunSpeechPort(
+      config: _config(),
+      opener: (Uri uri) async => socket,
+      dateBuilder: () => _fixedDate,
+      frameDelay: Duration.zero,
+    );
+    final LiveAsrSession session = port.openLiveAsr(Language.chinese);
+    final List<String> partials = <String>[];
+    (session as PartialAsrSession).setPartialListener(partials.add);
+
+    session.add(Uint8List(1280));
+    await Future<void>.delayed(Duration.zero);
+    session.add(Uint8List(1280));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(partials, <String>['你', '你好'],
+        reason: '中间结果要边说边上屏，不能等松手');
+    expect(await session.finish(), '你好吗');
+    expect(partials.last, '你好吗', reason: '定稿帧也要让上层拿到');
+  });
+
+  test('服务端结束后 add 不再发帧，也不抛异步错误', () async {
+    final _PartialSocket socket = _PartialSocket(<String>['你好']);
+    final XfyunSpeechPort port = XfyunSpeechPort(
+      config: _config(),
+      opener: (Uri uri) async => socket,
+      dateBuilder: () => _fixedDate,
+      frameDelay: Duration.zero,
+    );
+    final LiveAsrSession session = port.openLiveAsr(Language.chinese);
+    session.add(Uint8List(1280));
+    expect(await session.finish(), '你好');
+    final int sentBefore = socket.sent.length;
+
+    session.add(Uint8List(2560));
+    await Future<void>.delayed(Duration.zero);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(socket.sent.length, sentBefore, reason: '会话已结束，不能再往云端灌音频');
   });
 }

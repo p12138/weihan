@@ -47,6 +47,7 @@ class Message {
     required this.text,
     required this.language,
     required this.isMine,
+    this.isFinal = true,
   });
 
   final int id;
@@ -55,6 +56,19 @@ class Message {
 
   /// 是否为用户自己发出，决定气泡靠左还是靠右。
   final bool isMine;
+
+  /// 是否已定稿。`false` 表示同声传译的临时草稿：界面用更淡的样式，
+  /// 且不提供朗读按钮；定稿时用同一个 id 原位替换。
+  final bool isFinal;
+
+  /// 复制并替换可变字段，id / 语言 / 归属保持不变。
+  Message copyWith({String? text, bool? isFinal}) => Message(
+        id: id,
+        text: text ?? this.text,
+        language: language,
+        isMine: isMine,
+        isFinal: isFinal ?? this.isFinal,
+      );
 }
 
 /// 翻译结果。
@@ -184,6 +198,40 @@ class ConversationState {
         messages: <Message>[...messages, message],
         direction: direction,
       );
+
+  /// 按 id 原位替换；同 id 不存在时退化成追加。
+  ///
+  /// 同声传译的草稿气泡要在原位置持续变长、定稿时被整句译文覆盖，
+  /// 所以不能像 [add] 那样每次都往列表尾部塞新消息。
+  ConversationState upsert(Message message) {
+    final int index =
+        messages.indexWhere((Message item) => item.id == message.id);
+    if (index < 0) {
+      return add(message);
+    }
+    if (messages[index].text == message.text &&
+        messages[index].isFinal == message.isFinal) {
+      return this;
+    }
+    final List<Message> next = List<Message>.of(messages);
+    next[index] = message;
+    return ConversationState(messages: next, direction: direction);
+  }
+
+  /// 把消息插到 [anchorId] 之后；锚点不存在时退化成追加。
+  ///
+  /// 同传译文的返回时间可能晚于下一句的原文草稿；直接追加会把译文排到
+  /// 下一句后面，所以译文必须紧跟在它对应的原文气泡下面。
+  ConversationState insertAfter(int anchorId, Message message) {
+    final int index =
+        messages.indexWhere((Message item) => item.id == anchorId);
+    if (index < 0) {
+      return add(message);
+    }
+    final List<Message> next = List<Message>.of(messages);
+    next.insert(index + 1, message);
+    return ConversationState(messages: next, direction: direction);
+  }
 
   /// 切换翻译方向，保留消息。
   ConversationState flip() => ConversationState(

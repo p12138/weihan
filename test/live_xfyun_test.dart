@@ -11,6 +11,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:uyghur_interpreter/conversation.dart';
+import 'package:uyghur_interpreter/live_asr.dart';
 import 'package:uyghur_interpreter/speech_config.dart';
 import 'package:uyghur_interpreter/xfyun_speech.dart';
 
@@ -91,5 +92,41 @@ void main() {
       // ignore: avoid_print
       print('Xfyun live check: 未配置 XFYUN_UG_VCN，本轮只验中文闭环');
     }
+  });
+
+  test('讯飞流式识别真实探针：录音过程中回调中间文本', () async {
+    final XfyunSpeechPort speech = XfyunSpeechPort(
+      config: config,
+      ttsMp3: false,
+    );
+    final Uint8List pcm = await speech
+        .speak('今天天气很好，我们下午去市场买东西。', Language.chinese)
+        .timeout(const Duration(seconds: 70));
+    expect(pcm.length, greaterThan(1000));
+
+    final LiveAsrSession session = speech.openLiveAsr(Language.chinese);
+    final List<String> partials = <String>[];
+    bool doneBeforeFinish = false;
+    (session as PartialAsrSession).setPartialListener(partials.add);
+    (session as PartialAsrSession).setDoneListener(() {
+      doneBeforeFinish = true;
+    });
+
+    session.add(pcm);
+    // 先让前面几秒音频真的发出去，再看有没有中间结果（不等 stop 就出字）。
+    await Future<void>.delayed(const Duration(seconds: 3));
+    final int early = partials.length;
+    // 末尾补 8 秒静音，顺便观察 eos 是否会让服务端自己结束会话。
+    session.add(Uint8List(32000 * 8));
+    final String text =
+        await session.finish().timeout(const Duration(seconds: 60));
+
+    // ignore: avoid_print
+    print('Xfyun live check: 流式中间结果 early=$early '
+        'total=${partials.length} doneBeforeFinish=$doneBeforeFinish '
+        'final=$text');
+    expect(early, greaterThan(0), reason: '说话过程中就该有中间文本');
+    expect(partials, isNotEmpty);
+    expect(text, isNotEmpty);
   });
 }

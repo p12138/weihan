@@ -25,6 +25,24 @@ abstract class LiveAsrSession {
   Future<void> cancel();
 }
 
+/// 可选能力：识别会话能在录音过程中吐出「本会话累计文本」。
+///
+/// 讯飞在未开启 `wpgs` 动态修正时，返回结果只追加、不改写，因此累计文本
+/// 可以直接上屏、送翻译。不同会话之间的拼接由上层按顺序负责。
+/// 单独开接口而不是给 [LiveAsrSession] 加成员：`implements` 的测试替身
+/// 不会被一起打断。
+abstract class PartialAsrSession {
+  /// 每次云端返回新片段时回调累计文本；传 null 取消监听。
+  void setPartialListener(void Function(String accumulated)? listener);
+
+  /// 服务端主动结束本会话（例如 `eos` 静音超时后返回 status=2）。
+  /// 连续同传靠它及时换一条新连接，而不是等 `finish()`。
+  void setDoneListener(void Function()? listener);
+
+  /// 连接 / 协议层的异步错误（进不到 `finish()` 的那些）。
+  void setFailureListener(void Function(Object error)? listener);
+}
+
 /// 语音端口的可选能力：支持在录音的同时上传音频。
 abstract class LiveSpeechPort {
   /// **立刻**返回会话对象，建连在会话内部异步进行。

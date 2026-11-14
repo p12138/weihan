@@ -16,6 +16,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:uyghur_interpreter/conversation.dart';
 import 'package:uyghur_interpreter/default_speech.dart';
 import 'package:uyghur_interpreter/default_translator.dart';
+import 'package:uyghur_interpreter/interpreter.dart';
 import 'package:uyghur_interpreter/speech_config.dart';
 import 'package:uyghur_interpreter/speech_pipeline.dart';
 import 'package:uyghur_interpreter/translation_config.dart';
@@ -110,6 +111,73 @@ void main() {
     print('E2E live check: 中文识别=${turn.heard} '
         '译文=${turn.translation.text} provider=${turn.translation.provider} '
         '录音=${pcm.length}字节 朗读=${turn.audio.length}字节');
+  });
+
+  test('E2E 连续同传：中间静音自动分句，两句各出一句译文', () async {
+    final XfyunSpeechPort source =
+        XfyunSpeechPort(config: speechConfig, ttsMp3: false);
+    final Uint8List first = await source.speak('你好。', Language.chinese);
+    final Uint8List second = await source.speak('谢谢。', Language.chinese);
+    expect(first.length + second.length, greaterThan(2000));
+
+    final Uint8List silence = Uint8List(32000); // 1 秒
+    final BytesBuilder builder = BytesBuilder()
+      ..add(first)
+      ..add(silence)
+      ..add(silence)
+      ..add(second);
+    final Uint8List pcm = builder.takeBytes();
+
+    final List<InterpreterSentence> finals = <InterpreterSentence>[];
+    final LiveInterpreter interpreter = LiveInterpreter(
+      direction: TranslationDirection.zhToUg,
+      translator: buildDefaultTranslator(),
+      openSession: (Language language) =>
+          const ConfigurableSpeechPort().openLiveAsr(language),
+      onSentence: (InterpreterSentence sentence) {
+        if (!sentence.pending) {
+          finals.add(sentence);
+        }
+      },
+      onStatus: (String status) {
+        // ignore: avoid_print
+        print('E2E live check: 同传状态 $status');
+      },
+    );
+    expect(interpreter.start(), isTrue);
+    // ignore: avoid_print
+    print('E2E live check: 连续同传 1/2 测试音 ${pcm.length} 字节，开始边喂边译…');
+
+    const int frame = 1280;
+    final int speechEnd1 = first.length;
+    final int speechStart2 = first.length + silence.length * 2;
+    for (int offset = 0; offset < pcm.length; offset += frame) {
+      final int end =
+          offset + frame > pcm.length ? pcm.length : offset + frame;
+      final bool speaking = offset < speechEnd1 || offset >= speechStart2;
+      interpreter.addAudio(
+        Uint8List.sublistView(pcm, offset, end),
+        speaking ? 0.5 : 0.0,
+      );
+      if (offset % 3200 == 0) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+    }
+    await interpreter.stop();
+    // ignore: avoid_print
+    print('E2E live check: 连续同传 2/2 定稿 ${finals.length} 句');
+
+    expect(finals, isNotEmpty);
+    expect(
+      finals.any((InterpreterSentence item) => item.source.contains('你好')),
+      isTrue,
+      reason: '第一句没有被识别或提交',
+    );
+    expect(
+      finals.every((InterpreterSentence item) => item.translation.found),
+      isTrue,
+      reason: '有句子没拿到译文：${translationConfig.lastDiagnostic}',
+    );
   });
 
   if (ugVcn.trim().isNotEmpty) {

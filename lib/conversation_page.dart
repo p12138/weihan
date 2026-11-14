@@ -10,6 +10,7 @@ import 'default_speech.dart';
 import 'default_translator.dart';
 import 'device_audio.dart';
 import 'glass.dart';
+import 'interpreter.dart';
 import 'live_asr.dart';
 import 'palette_controller.dart';
 import 'speech_config.dart';
@@ -43,7 +44,8 @@ class ConversationPage extends StatefulWidget {
   State<ConversationPage> createState() => _ConversationPageState();
 }
 
-class _ConversationPageState extends State<ConversationPage> {
+class _ConversationPageState extends State<ConversationPage>
+    with WidgetsBindingObserver {
   final TextEditingController _controller = TextEditingController();
   ConversationState _state = const ConversationState();
   String _notice = '';
@@ -78,6 +80,21 @@ class _ConversationPageState extends State<ConversationPage> {
   LiveAsrSession? _liveSession;
   StreamSubscription<Uint8List>? _chunkSubscription;
 
+  /// 连续同传：与按住说话完全独立的一条路径，互不干扰。
+  bool _continuousMode = false;
+  bool _continuousActive = false;
+  bool _continuousStopping = false;
+  bool _pretranslate = true;
+  String _continuousStatus = '';
+  LiveInterpreter? _interpreter;
+  StreamSubscription<Uint8List>? _continuousChunks;
+  Timer? _watchdog;
+  final ScrollController _scroll = ScrollController();
+
+  /// 一句话的草稿气泡 id。final 译文晚到时 key 可能已经换成下一句，
+  /// 所以必须按 key 存，不能只留「当前一句」。
+  final Map<String, _DraftBubbles> _draftBubbles = <String, _DraftBubbles>{};
+
   /// 按下一刻的语言方向快照。会话的首帧已经带着源语言发上去了，
   /// 松手时必须用同一份方向，避免录音中途切方向造成「识别 A、按 B 翻译」。
   TranslationDirection? _voiceDirection;
@@ -90,9 +107,31 @@ class _ConversationPageState extends State<ConversationPage> {
   );
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  /// 切到后台时主动停同传：iOS 会挂起音频会话，留着「录音中」只会骗人。
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused && _continuousActive) {
+      unawaited(_stopContinuous(notice: '已切到后台 · 同传停止'));
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _levelSubscription?.cancel();
     _levelSubscription = null;
+    _watchdog?.cancel();
+    _watchdog = null;
+    _continuousChunks?.cancel();
+    _continuousChunks = null;
+    unawaited(_interpreter?.cancel());
+    _interpreter = null;
+    _scroll.dispose();
     unawaited(_discardLiveSession());
     _audioPort?.dispose();
     _controller.dispose();
@@ -105,12 +144,18 @@ class _ConversationPageState extends State<ConversationPage> {
     return _audioPort!;
   }
 
-  Message _newMessage(String text, Language language, bool isMine) {
+  Message _newMessage(
+    String text,
+    Language language,
+    bool isMine, {
+    bool isFinal = true,
+  }) {
     final Message message = Message(
       id: _nextId,
       text: text,
       language: language,
       isMine: isMine,
+      isFinal: isFinal,
     );
     _nextId += 1;
     return message;
@@ -493,6 +538,398 @@ class _ConversationPageState extends State<ConversationPage> {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // 连续同传
+  // ---------------------------------------------------------------------------
+
+  void _setContinuousMode(bool enabled) {
+    if (_starting || _recording || _continuousActive || _continuousStopping) {
+      return;
+    }
+    setState(() {
+      _continuousMode = enabled;
+      _continuousStatus = '';
+      _notice = enabled ? '连续同传 · 点下方麦克风开始' : '';
+    });
+  }
+
+  void _setPretranslate(bool enabled) {
+    if (_continuousActive || _continuousStopping) {
+      return;
+    }
+    setState(() => _pretranslate = enabled);
+  }
+
+  Future<void> _toggleContinuous() async {
+    if (_continuousStopping) {
+      return;
+    }
+    if (_continuousActive) {
+      await _stopContinuous();
+    } else {
+      await _startContinuous();
+    }
+  }
+
+  Future<void> _startContinuous() async {
+    if (_starting || _recording || _continuousActive || _continuousStopping) {
+      return;
+    }
+    if (!widget.speech.isAvailable) {
+      setState(() => _notice =
+          '语音未接入 · 到设置页填讯飞 APPID / APIKey / APISecret');
+      return;
+    }
+    final SpeechPort speech = widget.speech;
+    final AudioPort port = _audio();
+    if (speech is! LiveSpeechPort || port is! ChunkedAudioPort) {
+      setState(() => _notice = '当前语音后端不支持连续同传 · 请用按住说话');
+      return;
+    }
+    _starting = true;
+    _voiceDirection = _state.direction;
+    final TranslationDirection direction = _voiceDirection!;
+    _draftBubbles.clear();
+    final LiveSpeechPort live = speech as LiveSpeechPort;
+    final LiveInterpreter interpreter = LiveInterpreter(
+      direction: direction,
+      translator: widget.translator,
+      openSession: (Language language) => live.openLiveAsr(language),
+      onDraft: _onInterpreterDraft,
+      onSentence: _onInterpreterSentence,
+      onStatus: _onInterpreterStatus,
+      onClosed: _onInterpreterClosed,
+      pretranslate: _pretranslate,
+    );
+    if (!interpreter.start()) {
+      _starting = false;
+      if (mounted) {
+        setState(() => _notice = '连续同传启动失败 · 检查语音凭证或网络');
+      }
+      return;
+    }
+    _interpreter = interpreter;
+
+    // 先订阅再 startRecord：广播流不允许漏掉开头几帧。
+    final ChunkedAudioPort chunked = port as ChunkedAudioPort;
+    _continuousChunks = chunked.pcmChunks.listen(
+      (Uint8List chunk) {
+        final LiveInterpreter? active = _interpreter;
+        if (!mounted || active == null) {
+          return;
+        }
+        final double level = levelFromPcm(chunk);
+        active.addAudio(chunk, level);
+        _armWatchdog();
+        if ((level - _level).abs() >= 0.02) {
+          setState(() => _level = level);
+        }
+      },
+      onError: (Object error) {
+        debugPrint('同传增量流错误：$error');
+      },
+    );
+
+    bool started = false;
+    try {
+      final bool granted = await _audio().hasPermission();
+      if (!mounted) {
+        return;
+      }
+      if (!granted) {
+        await _abortContinuous();
+        if (mounted) {
+          setState(() => _notice =
+              '需要麦克风权限 · 在系统弹窗点「允许」，或到系统设置里开启后重试');
+        }
+        return;
+      }
+      await _audio().startRecord();
+      if (!mounted) {
+        return;
+      }
+      // 建连可能在等权限的这几百毫秒里已经失败并关闭；别进「录音中」。
+      if (!interpreter.isRunning) {
+        await _audio().stopRecord();
+        await _abortContinuous();
+        if (mounted) {
+          setState(() => _notice = '连续同传启动失败 · 识别连接未建立');
+        }
+        return;
+      }
+      started = true;
+      setState(() {
+        _continuousActive = true;
+        _recording = true;
+        _continuousStatus = '正在听…';
+        _notice = '连续同传中 · 点麦克风停止';
+      });
+      _recordWatch
+        ..reset()
+        ..start();
+      _armWatchdog();
+    } on Object catch (error) {
+      if (started) {
+        try {
+          await _audio().stopRecord();
+        } on Object catch (stopError) {
+          debugPrint('中止同传录音失败：$stopError');
+        }
+      }
+      await _abortContinuous();
+      if (mounted) {
+        setState(() => _notice = '无法开始同传：${_brief(error.toString())}');
+      }
+    } finally {
+      _starting = false;
+    }
+  }
+
+  Future<void> _stopContinuous({String? notice}) async {
+    if (!_continuousActive || _continuousStopping) {
+      return;
+    }
+    _continuousStopping = true;
+    _watchdog?.cancel();
+    _watchdog = null;
+    setState(() {
+      _recording = false;
+      _continuousStatus = '正在收尾…';
+      _notice = notice ?? '正在收尾…';
+    });
+    _recordWatch
+      ..stop()
+      ..reset();
+    try {
+      // 先停录、再断订阅：stopRecord 内部等 60ms 尾帧，这期间 sync 广播
+      // 还能把最后几块 PCM 交给编排器，最后几个字不会丢。
+      await _audio().stopRecord();
+    } on Object catch (error) {
+      debugPrint('停止同传录音失败：$error');
+    }
+    await Future<void>.delayed(Duration.zero);
+    final StreamSubscription<Uint8List>? chunks = _continuousChunks;
+    _continuousChunks = null;
+    if (chunks != null) {
+      unawaited(chunks.cancel());
+    }
+    final LiveInterpreter? interpreter = _interpreter;
+    _interpreter = null;
+    if (interpreter != null) {
+      try {
+        await interpreter.stop();
+      } on Object catch (error) {
+        debugPrint('同传收尾失败：$error');
+      }
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      // 收尾时还没定稿的草稿直接转正：用户已经停了，把最后听到的文字留住，
+      // 不要留下一堆永远半透明、也没有朗读按钮的气泡。
+      for (final Message message in _state.messages) {
+        if (!message.isFinal) {
+          _state = _state.upsert(message.copyWith(isFinal: true));
+        }
+      }
+      _continuousStatus = '';
+      _notice = notice ?? '同传已停止';
+      _draftBubbles.clear();
+      _level = 0;
+      _continuousActive = false;
+      _continuousStopping = false;
+    });
+  }
+
+  Future<void> _abortContinuous() async {
+    _watchdog?.cancel();
+    _watchdog = null;
+    final StreamSubscription<Uint8List>? chunks = _continuousChunks;
+    _continuousChunks = null;
+    if (chunks != null) {
+      unawaited(chunks.cancel());
+    }
+    final LiveInterpreter? interpreter = _interpreter;
+    _interpreter = null;
+    if (interpreter != null) {
+      await interpreter.cancel();
+    }
+    _continuousActive = false;
+    _continuousStopping = false;
+    _recording = false;
+    _continuousStatus = '';
+    _draftBubbles.clear();
+  }
+
+  void _armWatchdog() {
+    _watchdog?.cancel();
+    _watchdog = Timer(const Duration(seconds: 3), () {
+      if (!mounted || !_continuousActive) {
+        return;
+      }
+      unawaited(_stopContinuous(
+        notice: '麦克风被系统中断（可能是有声音在播放）',
+      ));
+    });
+  }
+
+  void _onInterpreterStatus(String status) {
+    if (!mounted || status == _continuousStatus) {
+      return;
+    }
+    setState(() => _continuousStatus = status);
+  }
+
+  void _onInterpreterClosed(String reason) {
+    if (!mounted) {
+      return;
+    }
+    if (_continuousActive) {
+      unawaited(_stopContinuous(
+        notice: reason.isEmpty ? '同传已结束' : '同传异常结束：$reason',
+      ));
+      return;
+    }
+    if (reason.isNotEmpty) {
+      setState(() => _notice = '同传异常结束：$reason');
+    }
+  }
+
+  void _onInterpreterDraft(InterpreterDraft draft) {
+    if (!mounted) {
+      return;
+    }
+    final TranslationDirection direction = _voiceDirection ?? _state.direction;
+    final bool wasAtBottom = _isAtBottom();
+    setState(() {
+      final _DraftBubbles entry =
+          _draftBubbles.putIfAbsent(draft.key, _DraftBubbles.new);
+      if (draft.source.trim().isNotEmpty) {
+        _upsertBubble(
+          entry,
+          isSource: true,
+          text: draft.source,
+          isFinal: false,
+          direction: direction,
+        );
+      }
+      final Translation? translation = draft.translation;
+      if (translation != null &&
+          translation.found &&
+          translation.text.isNotEmpty) {
+        _upsertBubble(
+          entry,
+          isSource: false,
+          text: translation.text,
+          isFinal: false,
+          direction: direction,
+        );
+      }
+    });
+    if (wasAtBottom) {
+      _scrollToBottom();
+    }
+  }
+
+  void _onInterpreterSentence(InterpreterSentence sentence) {
+    if (!mounted) {
+      return;
+    }
+    final TranslationDirection direction = _voiceDirection ?? _state.direction;
+    final bool wasAtBottom = _isAtBottom();
+    setState(() {
+      final _DraftBubbles entry =
+          _draftBubbles.putIfAbsent(sentence.key, _DraftBubbles.new);
+      _upsertBubble(
+        entry,
+        isSource: true,
+        text: sentence.source,
+        isFinal: true,
+        direction: direction,
+      );
+      final Translation translation = sentence.translation;
+      if (translation.found && translation.text.isNotEmpty) {
+        _upsertBubble(
+          entry,
+          isSource: false,
+          text: translation.text,
+          isFinal: !sentence.pending,
+          direction: direction,
+        );
+      }
+    });
+    if (wasAtBottom) {
+      _scrollToBottom();
+    }
+  }
+
+  /// 同一句话的草稿与定稿共用 [Message.id]，原位替换不新增气泡。
+  void _upsertBubble(
+    _DraftBubbles entry, {
+    required bool isSource,
+    required String text,
+    required bool isFinal,
+    required TranslationDirection direction,
+  }) {
+    final int? id = isSource ? entry.sourceId : entry.targetId;
+    if (id != null) {
+      final Message? current = _messageById(id);
+      if (current != null) {
+        if (isFinal || !current.isFinal) {
+          _state = _state.upsert(current.copyWith(text: text, isFinal: isFinal));
+        }
+        return;
+      }
+    }
+    final Message message = _newMessage(
+      text,
+      isSource ? direction.source : direction.target,
+      isSource,
+      isFinal: isFinal,
+    );
+    if (!isSource && entry.sourceId != null) {
+      // 译文可能比下一句原文晚到：紧跟在对应原文下面，别排到队尾。
+      _state = _state.insertAfter(entry.sourceId!, message);
+    } else {
+      _state = _state.add(message);
+    }
+    if (isSource) {
+      entry.sourceId = message.id;
+    } else {
+      entry.targetId = message.id;
+    }
+  }
+
+  Message? _messageById(int id) {
+    for (final Message message in _state.messages) {
+      if (message.id == id) {
+        return message;
+      }
+    }
+    return null;
+  }
+
+  bool _isAtBottom() {
+    if (!_scroll.hasClients) {
+      return true;
+    }
+    final ScrollPosition position = _scroll.position;
+    return position.maxScrollExtent - position.pixels < 80;
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) {
+        return;
+      }
+      final ScrollPosition position = _scroll.position;
+      if (position.maxScrollExtent > position.pixels) {
+        position.jumpTo(position.maxScrollExtent);
+      }
+    });
+  }
+
   Future<void> _speak(String text, Language language) async {
     try {
       final Uint8List audio = await widget.speech.speak(text, language);
@@ -522,6 +959,10 @@ class _ConversationPageState extends State<ConversationPage> {
       value.length <= 200 ? value : '${value.substring(0, 200)}…';
 
   void _flipDirection() {
+    if (_continuousActive) {
+      setState(() => _notice = '同传中不能切换方向 · 先停止');
+      return;
+    }
     setState(() {
       _state = _state.flip();
       _notice = '';
@@ -608,7 +1049,7 @@ class _ConversationPageState extends State<ConversationPage> {
                       child: _state.messages.isEmpty
                           ? const _EmptyState()
                           : _buildConversation(
-                              onSpeak: speechReady
+                              onSpeak: speechReady && !_continuousActive
                                   ? (String text, Language language) {
                                       _speak(text, language);
                                     }
@@ -618,7 +1059,8 @@ class _ConversationPageState extends State<ConversationPage> {
                     // 录音浮层：IgnorePointer 保证抬手事件仍然回到语音按钮，
                     // 不会因为浮层盖上来而丢一次松手；放在中间偏下，正好是
                     // 手指上滑进「取消区」时视线会停住的位置。
-                    if (_recording)
+                    // 连续同传没有「上滑取消」，不显示这层按压提示。
+                    if (_recording && !_continuousActive)
                       Positioned.fill(
                         child: IgnorePointer(
                           child: Align(
@@ -645,8 +1087,15 @@ class _ConversationPageState extends State<ConversationPage> {
                 recording: _recording,
                 cancelling: _cancelArmed,
                 busy: _busy,
+                continuous: _continuousMode,
+                continuousActive: _continuousActive,
+                continuousStatus: _continuousStatus,
+                pretranslate: _pretranslate,
+                onModeChanged: _setContinuousMode,
+                onPretranslateChanged: _setPretranslate,
                 onSend: _busy || _recording ? null : _submit,
-                onVoiceStart: _beginVoice,
+                onVoiceStart:
+                    _continuousMode ? _toggleContinuous : _beginVoice,
                 onVoiceEnd: _endVoice,
                 onVoiceCancelChanged: _setCancelArmed,
               ),
@@ -659,14 +1108,21 @@ class _ConversationPageState extends State<ConversationPage> {
 
   Widget _buildConversation({SpeakCallback? onSpeak}) {
     return ListView.builder(
+      controller: _scroll,
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
       itemCount: _state.messages.length,
       itemBuilder: (BuildContext context, int index) => MessageBubble(
+        key: ValueKey<int>(_state.messages[index].id),
         message: _state.messages[index],
         onSpeak: onSpeak,
       ),
     );
   }
+}
+
+class _DraftBubbles {
+  int? sourceId;
+  int? targetId;
 }
 
 typedef SpeakCallback = void Function(String text, Language language);
@@ -1162,6 +1618,12 @@ class _Composer extends StatelessWidget {
     required this.recording,
     required this.cancelling,
     required this.busy,
+    required this.continuous,
+    required this.continuousActive,
+    required this.continuousStatus,
+    required this.pretranslate,
+    required this.onModeChanged,
+    required this.onPretranslateChanged,
     required this.onSend,
     required this.onVoiceStart,
     required this.onVoiceEnd,
@@ -1174,6 +1636,12 @@ class _Composer extends StatelessWidget {
   final bool recording;
   final bool cancelling;
   final bool busy;
+  final bool continuous;
+  final bool continuousActive;
+  final String continuousStatus;
+  final bool pretranslate;
+  final ValueChanged<bool> onModeChanged;
+  final ValueChanged<bool> onPretranslateChanged;
   final VoidCallback? onSend;
   final VoidCallback onVoiceStart;
   final VoiceEndCallback onVoiceEnd;
@@ -1191,6 +1659,47 @@ class _Composer extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: <Widget>[
+              Row(
+                children: <Widget>[
+                  _ModeChip(
+                    label: '按住说',
+                    selected: !continuous,
+                    enabled: !recording,
+                    onTap: () => onModeChanged(false),
+                  ),
+                  const SizedBox(width: 8),
+                  _ModeChip(
+                    label: '连续同传',
+                    selected: continuous,
+                    enabled: !recording && speechReady,
+                    onTap: () => onModeChanged(true),
+                  ),
+                  if (continuous) ...<Widget>[
+                    const SizedBox(width: 8),
+                    _ModeChip(
+                      label: '预译',
+                      selected: pretranslate,
+                      enabled: !recording,
+                      onTap: () => onPretranslateChanged(!pretranslate),
+                    ),
+                  ],
+                  const Spacer(),
+                  if (continuousStatus.isNotEmpty)
+                    Flexible(
+                      child: Text(
+                        continuousStatus,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.right,
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: AppColors.inkMuted,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 10),
               Row(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: <Widget>[
@@ -1246,12 +1755,61 @@ class _Composer extends StatelessWidget {
                   recording: recording,
                   cancelling: cancelling,
                   busy: busy,
+                  continuous: continuous,
+                  continuousActive: continuousActive,
                   onStart: onVoiceStart,
                   onEnd: onVoiceEnd,
                   onCancelChanged: onVoiceCancelChanged,
                 ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 输入区上方的模式胶囊：按住说 / 连续同传。
+class _ModeChip extends StatelessWidget {
+  const _ModeChip({
+    required this.label,
+    required this.selected,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Opacity(
+      opacity: enabled ? 1 : 0.5,
+      child: GestureDetector(
+        onTap: enabled && !selected ? onTap : null,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+          decoration: BoxDecoration(
+            color: selected
+                ? AppColors.primary.withOpacity(0.12)
+                : Colors.white.withOpacity(0.45),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: selected ? AppColors.primary : AppColors.line,
+            ),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 12.5,
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+              color: selected ? AppColors.primary : AppColors.inkMuted,
+            ),
           ),
         ),
       ),
@@ -1277,6 +1835,8 @@ class _VoiceButton extends StatefulWidget {
     required this.recording,
     required this.cancelling,
     required this.busy,
+    required this.continuous,
+    required this.continuousActive,
     required this.onStart,
     required this.onEnd,
     required this.onCancelChanged,
@@ -1286,6 +1846,8 @@ class _VoiceButton extends StatefulWidget {
   final bool recording;
   final bool cancelling;
   final bool busy;
+  final bool continuous;
+  final bool continuousActive;
   final VoidCallback onStart;
   final VoiceEndCallback onEnd;
   final ValueChanged<bool> onCancelChanged;
@@ -1304,11 +1866,18 @@ class _VoiceButtonState extends State<_VoiceButton> {
   /// 当前是否在取消区。本地留一份，松手那一刻不用等父层回传。
   bool _cancelArmed = false;
 
-  bool get _enabled => widget.ready && !widget.busy;
+  bool get _enabled =>
+      widget.ready && (widget.continuous || !widget.busy);
 
   String get _label {
     if (!widget.ready) {
       return '按住说话 · 待接入';
+    }
+    if (widget.continuous) {
+      if (!widget.continuousActive) {
+        return '开始连续同传';
+      }
+      return widget.recording ? '停止同传 · 正在听' : '正在收尾…';
     }
     if (_cancelArmed) {
       return '松开手指 · 取消发送';
@@ -1326,6 +1895,11 @@ class _VoiceButtonState extends State<_VoiceButton> {
     if (!widget.ready) {
       return Icons.mic_off_outlined;
     }
+    if (widget.continuous) {
+      return widget.continuousActive
+          ? Icons.stop_circle_outlined
+          : Icons.record_voice_over_outlined;
+    }
     if (_cancelArmed) {
       return Icons.undo;
     }
@@ -1336,6 +1910,12 @@ class _VoiceButtonState extends State<_VoiceButton> {
   }
 
   void _press(PointerDownEvent event) {
+    if (widget.continuous) {
+      if (_enabled) {
+        widget.onStart();
+      }
+      return;
+    }
     _downDy = event.position.dy;
     _cancelArmed = false;
     setState(() => _down = true);
@@ -1345,7 +1925,7 @@ class _VoiceButtonState extends State<_VoiceButton> {
 
   /// 上滑进 / 滑出取消区。只看竖直向上的位移，横着挪不算。
   void _updateCancel(double dy) {
-    if (!_down) {
+    if (widget.continuous || !_down) {
       return;
     }
     final bool armed = (_downDy - dy) >= kCancelDragDistance;
@@ -1368,6 +1948,9 @@ class _VoiceButtonState extends State<_VoiceButton> {
   }
 
   void _release() {
+    if (widget.continuous) {
+      return;
+    }
     final bool cancel = _cancelArmed;
     if (_down || _cancelArmed) {
       setState(() {
@@ -1410,7 +1993,9 @@ class _VoiceButtonState extends State<_VoiceButton> {
       button: true,
       enabled: _enabled,
       label: _label,
-      hint: '按住不动说话，松开手指结束；手指向上滑可以取消',
+      hint: widget.continuous
+          ? '点击开始或停止连续同传'
+          : '按住不动说话，松开手指结束；手指向上滑可以取消',
       child: Listener(
         key: const ValueKey<String>('voice-button'),
         behavior: HitTestBehavior.opaque,
@@ -1821,9 +2406,10 @@ class MessageBubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final bool rtl = message.language.isRtl;
     final bool mine = message.isMine;
+    final bool draft = !message.isFinal;
     final double maxWidth = MediaQuery.of(context).size.width * 0.74;
 
-    final Widget bubble = Container(
+    final Widget content = Container(
       constraints: BoxConstraints(maxWidth: maxWidth),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
@@ -1862,8 +2448,13 @@ class MessageBubble extends StatelessWidget {
       ),
     );
 
+    final Widget bubble = Opacity(
+      opacity: draft ? 0.62 : 1,
+      child: content,
+    );
+
     final SpeakCallback? speak = onSpeak;
-    if (mine || speak == null) {
+    if (mine || speak == null || draft) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 5),
         child: Align(
