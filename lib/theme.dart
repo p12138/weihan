@@ -372,7 +372,7 @@ class AppTheme {
       iconButtonTheme: IconButtonThemeData(
         style: IconButton.styleFrom(foregroundColor: palette.primary),
       ),
-      dialogTheme: DialogTheme(
+      dialogTheme: DialogThemeData(
         backgroundColor: palette.canvas,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
@@ -394,7 +394,7 @@ class AppTheme {
       ),
       tooltipTheme: TooltipThemeData(
         decoration: BoxDecoration(
-          color: palette.primaryDeep.withOpacity(0.94),
+          color: palette.primaryDeep.withValues(alpha: 0.94),
           borderRadius: BorderRadius.circular(8),
         ),
         textStyle: const TextStyle(color: Colors.white, fontSize: 12.5),

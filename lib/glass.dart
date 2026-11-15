@@ -180,7 +180,7 @@ class GlassPanel extends StatelessWidget {
     final double radius = corner ?? spec.corner;
     final double sigma = blur ?? spec.blur;
     final double opacity = fillOpacity ?? spec.fillOpacity;
-    final Color base = (tint ?? Colors.white).withOpacity(opacity);
+    final Color base = (tint ?? Colors.white).withValues(alpha: opacity);
     final BorderRadius shape = BorderRadius.circular(radius);
 
     Widget surface = Container(
@@ -190,7 +190,7 @@ class GlassPanel extends StatelessWidget {
         borderRadius: shape,
         border: showBorder
             ? Border.all(
-                color: Colors.white.withOpacity(spec.borderOpacity),
+                color: Colors.white.withValues(alpha: spec.borderOpacity),
                 width: 1,
               )
             : null,
@@ -213,10 +213,10 @@ class GlassPanel extends StatelessWidget {
                     end: Alignment.bottomRight,
                     stops: const <double>[0.0, 0.35, 0.36, 1.0],
                     colors: <Color>[
-                      Colors.white.withOpacity(0.30),
-                      Colors.white.withOpacity(0.06),
-                      Colors.white.withOpacity(0.0),
-                      Colors.white.withOpacity(0.04),
+                      Colors.white.withValues(alpha: 0.30),
+                      Colors.white.withValues(alpha: 0.06),
+                      Colors.white.withValues(alpha: 0.0),
+                      Colors.white.withValues(alpha: 0.04),
                     ],
                   ),
                 ),
@@ -243,7 +243,7 @@ class GlassPanel extends StatelessWidget {
         boxShadow: sigma > 0
             ? <BoxShadow>[
                 BoxShadow(
-                  color: const Color(0xFF0B3A36).withOpacity(0.10),
+                  color: const Color(0xFF0B3A36).withValues(alpha: 0.10),
                   blurRadius: 18,
                   offset: const Offset(0, 8),
                 ),
@@ -273,7 +273,7 @@ class AuroraBackground extends StatelessWidget {
             left: -80,
             child: _Blob(
               size: 320,
-              color: AppColors.primary.withOpacity(0.20),
+              color: AppColors.primary.withValues(alpha: 0.20),
             ),
           ),
           Positioned(
@@ -281,7 +281,7 @@ class AuroraBackground extends StatelessWidget {
             right: -110,
             child: _Blob(
               size: 300,
-              color: AppColors.sand.withOpacity(0.18),
+              color: AppColors.sand.withValues(alpha: 0.18),
             ),
           ),
           Positioned(
@@ -289,7 +289,7 @@ class AuroraBackground extends StatelessWidget {
             left: 40,
             child: _Blob(
               size: 340,
-              color: AppColors.primary.withOpacity(0.10),
+              color: AppColors.primary.withValues(alpha: 0.10),
             ),
           ),
           Positioned.fill(child: child),
@@ -314,7 +314,7 @@ class _Blob extends StatelessWidget {
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           gradient: RadialGradient(
-            colors: <Color>[color, color.withOpacity(0.0)],
+            colors: <Color>[color, color.withValues(alpha: 0.0)],
           ),
         ),
       ),

@@ -1326,16 +1326,16 @@ class _LanguagePill extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
           decoration: BoxDecoration(
             gradient: active ? AppColors.gradientOf(uyghur) : null,
-            color: active ? null : soft.withOpacity(0.7),
+            color: active ? null : soft.withValues(alpha: 0.7),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: active ? Colors.transparent : color.withOpacity(0.30),
+              color: active ? Colors.transparent : color.withValues(alpha: 0.30),
               width: 1,
             ),
             boxShadow: active
                 ? <BoxShadow>[
                     BoxShadow(
-                      color: color.withOpacity(0.30),
+                      color: color.withValues(alpha: 0.30),
                       blurRadius: 12,
                       offset: const Offset(0, 4),
                     ),
@@ -1350,7 +1350,7 @@ class _LanguagePill extends StatelessWidget {
                 height: 22,
                 alignment: Alignment.center,
                 decoration: BoxDecoration(
-                  color: active ? Colors.white.withOpacity(0.24) : color,
+                  color: active ? Colors.white.withValues(alpha: 0.24) : color,
                   borderRadius: BorderRadius.circular(7),
                 ),
                 child: Text(
@@ -1406,7 +1406,7 @@ class _SwapButton extends StatelessWidget {
           border: Border.all(color: AppColors.line),
           boxShadow: <BoxShadow>[
             BoxShadow(
-              color: AppColors.primaryDeep.withOpacity(0.10),
+              color: AppColors.primaryDeep.withValues(alpha: 0.10),
               blurRadius: 10,
               offset: const Offset(0, 3),
             ),
@@ -1716,7 +1716,7 @@ class _Composer extends StatelessWidget {
                       decoration: InputDecoration(
                         hintText: '输入${direction.source.label}…',
                         filled: true,
-                        fillColor: Colors.white.withOpacity(0.62),
+                        fillColor: Colors.white.withValues(alpha: 0.62),
                         contentPadding: const EdgeInsets.symmetric(
                           horizontal: 16,
                           vertical: 13,
@@ -1796,8 +1796,8 @@ class _ModeChip extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
           decoration: BoxDecoration(
             color: selected
-                ? AppColors.primary.withOpacity(0.12)
-                : Colors.white.withOpacity(0.45),
+                ? AppColors.primary.withValues(alpha: 0.12)
+                : Colors.white.withValues(alpha: 0.45),
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
               color: selected ? AppColors.primary : AppColors.line,
@@ -2026,7 +2026,7 @@ class _VoiceButtonState extends State<_VoiceButton> {
                   ? <BoxShadow>[
                       BoxShadow(
                         color: (active ? AppColors.coral : AppColors.primaryDeep)
-                            .withOpacity(0.28),
+                            .withValues(alpha: 0.28),
                         blurRadius: 16,
                         offset: const Offset(0, 6),
                       ),
@@ -2042,8 +2042,8 @@ class _VoiceButtonState extends State<_VoiceButton> {
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
                     color: _enabled
-                        ? Colors.white.withOpacity(0.22)
-                        : Colors.white.withOpacity(0.55),
+                        ? Colors.white.withValues(alpha: 0.22)
+                        : Colors.white.withValues(alpha: 0.55),
                     shape: BoxShape.circle,
                   ),
                   child: Icon(
@@ -2099,7 +2099,7 @@ class _Waveform extends StatelessWidget {
                 width: 3,
                 height: active ? height : height * 0.55,
                 decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(active ? 0.95 : 0.45),
+                  color: Colors.white.withValues(alpha: active ? 0.95 : 0.45),
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
@@ -2156,12 +2156,12 @@ class _CancelBadge extends StatelessWidget {
       curve: Curves.easeOut,
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
       decoration: BoxDecoration(
-        color: armed ? AppColors.coral : Colors.black.withOpacity(0.4),
+        color: armed ? AppColors.coral : Colors.black.withValues(alpha: 0.4),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
           color: armed
-              ? Colors.white.withOpacity(0.5)
-              : Colors.white.withOpacity(0.24),
+              ? Colors.white.withValues(alpha: 0.5)
+              : Colors.white.withValues(alpha: 0.24),
         ),
       ),
       child: Row(
@@ -2227,14 +2227,14 @@ class _RecordingPanel extends StatelessWidget {
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: <Color>[
-            base.withOpacity(0.94),
+            base.withValues(alpha: 0.94),
             Color.lerp(base, Colors.black, 0.3) ?? base,
           ],
         ),
         borderRadius: BorderRadius.circular(22),
         boxShadow: <BoxShadow>[
           BoxShadow(
-            color: base.withOpacity(0.32),
+            color: base.withValues(alpha: 0.32),
             blurRadius: 22,
             offset: const Offset(0, 8),
           ),
@@ -2251,9 +2251,9 @@ class _RecordingPanel extends StatelessWidget {
               height: 42,
               alignment: Alignment.center,
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.14),
+                color: Colors.white.withValues(alpha: 0.14),
                 shape: BoxShape.circle,
-                border: Border.all(color: Colors.white.withOpacity(0.22)),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
               ),
               child: Icon(
                 cancelling ? Icons.undo : Icons.mic,
@@ -2277,7 +2277,7 @@ class _RecordingPanel extends StatelessWidget {
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
-                        color: Colors.white.withOpacity(0.92),
+                        color: Colors.white.withValues(alpha: 0.92),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -2285,7 +2285,7 @@ class _RecordingPanel extends StatelessWidget {
                       _clock,
                       style: TextStyle(
                         fontSize: 12,
-                        color: Colors.white.withOpacity(0.62),
+                        color: Colors.white.withValues(alpha: 0.62),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -2297,7 +2297,7 @@ class _RecordingPanel extends StatelessWidget {
                         textAlign: TextAlign.end,
                         style: TextStyle(
                           fontSize: 11,
-                          color: Colors.white.withOpacity(0.7),
+                          color: Colors.white.withValues(alpha: 0.7),
                         ),
                       ),
                     ),
@@ -2344,7 +2344,7 @@ class _LiveBars extends StatelessWidget {
               width: 3,
               height: height.clamp(4.0, 30.0).toDouble(),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.35 + 0.55 * level),
+                color: Colors.white.withValues(alpha: 0.35 + 0.55 * level),
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -3004,7 +3004,7 @@ class _ThemeChip extends StatelessWidget {
           border: Border.all(color: Colors.white, width: 1.5),
           boxShadow: <BoxShadow>[
             BoxShadow(
-              color: color.withOpacity(0.35),
+              color: color.withValues(alpha: 0.35),
               blurRadius: 4,
               offset: const Offset(0, 1),
             ),
@@ -3128,7 +3128,7 @@ class _UpdateBanner extends StatelessWidget {
                   color: AppColors.primarySoft,
                   borderRadius: BorderRadius.circular(14),
                   border: Border.all(
-                    color: AppColors.primary.withOpacity(0.28),
+                    color: AppColors.primary.withValues(alpha: 0.28),
                   ),
                 ),
                 child: Row(

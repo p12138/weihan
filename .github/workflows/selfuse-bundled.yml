@@ -187,10 +187,10 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Flutter 3.24.0
+      - name: Set up Flutter 3.50.0
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.24.0"
+          flutter-version: "3.50.0"
           channel: stable
           cache: true
 
@@ -531,10 +531,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Flutter 3.24.0
+      - name: Set up Flutter 3.50.0
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.24.0"
+          flutter-version: "3.50.0"
           channel: stable
           cache: true
 
@@ -750,10 +750,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Flutter 3.24.0
+      - name: Set up Flutter 3.50.0
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: "3.24.0"
+          flutter-version: "3.50.0"
           channel: stable
           cache: true
 

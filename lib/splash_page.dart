@@ -166,7 +166,7 @@ class _SplashCenter extends StatelessWidget {
             ),
             boxShadow: <BoxShadow>[
               BoxShadow(
-                color: Colors.black.withOpacity(0.22),
+                color: Colors.black.withValues(alpha: 0.22),
                 blurRadius: 24,
                 offset: const Offset(0, 10),
               ),
@@ -252,12 +252,12 @@ class _SplashDivider extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: <Widget>[
-        Container(width: 42, height: 1, color: _splashTeal.withOpacity(0.42)),
+        Container(width: 42, height: 1, color: _splashTeal.withValues(alpha: 0.42)),
         const Padding(
           padding: EdgeInsets.symmetric(horizontal: 10),
           child: Icon(Icons.auto_awesome, size: 13, color: _splashAmber),
         ),
-        Container(width: 42, height: 1, color: _splashTeal.withOpacity(0.42)),
+        Container(width: 42, height: 1, color: _splashTeal.withValues(alpha: 0.42)),
       ],
     );
   }
@@ -274,9 +274,9 @@ class _SplashFooter extends StatelessWidget {
         Row(
           mainAxisSize: MainAxisSize.min,
           children: <Widget>[
-            _dot(_splashTeal.withOpacity(0.65), 5),
+            _dot(_splashTeal.withValues(alpha: 0.65), 5),
             _dot(_splashAmber, 7),
-            _dot(Colors.white.withOpacity(0.8), 5),
+            _dot(Colors.white.withValues(alpha: 0.8), 5),
           ],
         ),
         const SizedBox(height: 12),
@@ -285,7 +285,7 @@ class _SplashFooter extends StatelessWidget {
           style: TextStyle(
             fontSize: 11,
             letterSpacing: 2.4,
-            color: Colors.white.withOpacity(0.55),
+            color: Colors.white.withValues(alpha: 0.55),
           ),
         ),
       ],
