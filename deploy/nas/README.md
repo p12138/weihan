@@ -1,6 +1,6 @@
 # NAS 更新分发（Lucky 反代）
 
-同一个「更新源地址」目录下放两类文件，App 分别取用：
+同一个控制面目录下放两类文件，App 分别取用（GitHub 主源 + NAS 兜底，见第 9 节）：
 
 | 文件 | 用途 | 触发方式 | 是否要重装 |
 |---|---|---|---|
@@ -12,16 +12,20 @@
 > 「下次同传就生效」的调整不用出包；要改函数体、widget 结构仍须整包更新。
 > 细节见仓库根目录 README 第 10 节。
 
-App 的整包更新只做一个 HTTP GET：`<更新源地址>/latest-android.json`
-（iOS 是 `latest-ios.json`），拿到清单后比对版本，再从同目录下载安装包。
+App 的整包更新只做一个 HTTP GET：`<控制面>/latest-android.json`
+（iOS 是 `latest-ios.json`），拿到清单后比对版本，再从**胜出源的载荷基址**下载安装包。
 热配置则取同目录的 `remote-config.json`，两者共用同一套 `no-store` 缓存规则。
+
+**控制面 / 载荷面分离 + 有序源**（见根目录 README 第 9 节）：App 内置有序更新源，
+先查 **GitHub 主源**（`raw.githubusercontent.com/.../deploy/update`，只放无密钥 JSON），
+连不上自动回退到 **NAS**。含凭证的 APK/IPA 只放 NAS / 草稿 Release，绝不入库。
 
 这样设计的原因：
 
 - 域名、端口随时能换，不用重新出包（清单里只写文件名）；
-- 改参数不必发版、不必重装，配置放在 NAS 上随时改随时生效；
-- 走你自己的 NAS，不依赖 GitHub 的连通性；
-- 文件在你手里，草稿 Release 那套「登录才能下」的限制不影响更新。
+- 改参数不必发版、不必重装，配置随时改随时生效；
+- 出门在外走 GitHub CDN 稳定，境内 GitHub 不通时 NAS（mihomo 常开）兜底；
+- 含凭证包不外泄：GitHub 上只有无密钥 JSON，草稿 Release 那套限制不影响更新。
 
 ## 1. 目录
 
@@ -75,15 +79,20 @@ curl -s https://weihan.example.com/latest-android.json
 
 第二条在还没放清单时返回 404 是正常的。
 
-## 4. 填进 App
+## 4. 内置更新源，无需在 App 里填写
 
-设置页 →「软件更新」→ 更新源地址填：
+设置页**没有**「更新源地址」输入框，只读显示内置的
+`override → GitHub → NAS` 有序源。GitHub 主源由工作流自动生成，NAS 基址由
+仓库 Variable `UPDATE_NAS_BASE`（如 `https://weihan.example.com`）在编译期注入：
 
 ```
-https://weihan.example.com
+# 仓库 Settings → Secrets and variables → Actions → Variables
+UPDATE_NAS_BASE = https://weihan.example.com
 ```
 
-留空则用构建期内置的地址（`--dart-define=UPDATE_BASE=...`）。
+三个基址（`UPDATE_GITHUB_BASE` / `UPDATE_NAS_BASE` / `UPDATE_GITHUB_PAYLOAD_BASE`）
+由 `scripts/write_bundle_defines.py` 写进 `--dart-define-from-file`；
+`UPDATE_NAS_BASE` 是纯 URL，不含任何认证。
 
 点「检查更新（整包 APK 重装）」应立即返回「已是最新」或「发现新版本」。
 点「立即同步配置（热配置·免重装）」会取同目录的 `remote-config.json`，
@@ -114,16 +123,20 @@ python3 scripts/make_update_manifest.py \
 
 在仓库 Settings → Secrets and variables → Actions 添加：
 
-| Secret | 说明 |
+| Secret / Variable | 说明 |
 |---|---|
 | `NAS_HOST` | NAS 的公网地址或内网地址（GitHub Runner 要能连到） |
 | `NAS_PORT` | SSH 端口，默认 22 |
 | `NAS_USER` | SSH 用户名 |
 | `NAS_SSH_KEY` | 对应公钥的私钥全文（建议单独生成一把，只允许写这个目录） |
 | `NAS_UPDATE_DIR` | 目标目录，例如 `/volume1/docker/weihan-update/data` |
+| `UPDATE_NAS_BASE`（Variable） | NAS 对外 URL，注入编译期配置；**配了才有 NAS 兜底 / 载荷下载** |
 
-五个都配齐后，`selfuse-bundled-build` 每次出包会自动把 APK/IPA 与清单推上去；
-缺任何一个就跳过推送，不影响出包本身。
+五个 Secrets 配齐后，`selfuse-bundled-build` 每次出包会自动把 APK/IPA、清单与
+`remote-config.json` 推上 NAS（缺任一则跳过推送，不影响出包）；同时把无密钥的
+`latest-*.json` / `remote-config.json` 发布到 GitHub 主源 `deploy/update/`
+（带 `[skip ci]` 的 bot commit，发布前做无密钥硬门禁）。
+控制面发布与 NAS 推送彼此独立：GitHub 主源不要求 NAS 配好。
 
 > NAS 的 SSH 默认只在内网。要在公网推送，需要用 Lucky 的 **TCP 转发**
 > 把某个公网端口转到 NAS 的 22（或改用 Tailscale）。只做手动上传则不需要。
@@ -136,11 +149,12 @@ python3 scripts/make_update_manifest.py \
 | 一直提示没有新版 | `curl https://域名/latest-android.json` 里的 `version` 是否大于 App 版本 |
 | 下载到一半失败 | 看 `nginx.conf` 是否带了 `Accept-Ranges`；NAS 磁盘是否满 |
 | 校验失败 | 清单里的 `sha256` 与文件不匹配，重新生成清单 |
-| 同步热配置一直「未启用」 | 是否把 `remote-config.json` 放到与 `latest-android.json` 同目录；更新源地址是否填对 |
+| 同步热配置一直失败 | `remote-config.json` 是否与 `latest-android.json` 同目录；GitHub 主源 / NAS 兜底是否都不通（状态行会带逐源标签）；`UPDATE_NAS_BASE` 是否配好 |
 
 ## 7. 热配置 `remote-config.json`
 
-放在与 `latest-android.json` **同一个目录**（App 用同一个更新源地址推导）。
+权威副本在仓库 `deploy/update/remote-config.json`（**只放无密钥安全项**），
+由 CI 发布到 GitHub 主源并推到 NAS，与 `latest-android.json` **同一个目录**。
 `nginx.conf` 已给它 `no-store`，改完刷新即时生效。下面是只含**安全项**的示例，
 改完把 `configVersion` 加一，App 下次同步就能看到新版本号：
 
@@ -191,7 +205,7 @@ python3 scripts/make_update_manifest.py \
   **默认即可生效**，改它们不需要在 App 里开任何开关；
 - `translation` / `asr` 里的服务商、endpoint、vcn 以及 `secrets` 属于**敏感项**，
   默认**全部跳过**。要放行需在设置页打开「信任远程配置的服务商/端点/密钥覆盖」，
-  且 endpoint 的 host 必须等于更新源地址的 host（只能指向自己的 NAS 代理）；
+  且 endpoint 的 host 必须在**所有内置源的 host 白名单**内（GitHub + NAS + override）；
 - `secrets` 最严格：即便打开信任开关也不下发（App 侧 `trustSecrets` 恒关），
   **自带凭证的自用包永不被任何远程密钥覆盖**；密钥只在进程内存里生效，
   绝不写入缓存、绝不回显、绝不落盘；

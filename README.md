@@ -700,25 +700,54 @@ CI 会先跑 `test/bundled_config_test.dart`（带同一份 define 文件）确�
 
 ---
 
-## 9. 应用内更新（NAS 分发 + TestFlight）
+## 9. 应用内更新（内置 GitHub 主源 + NAS 回退，免手填）
+
+### 9.0 更新源内置，无需用户填写
+
+设置页**没有**「更新源地址」输入框。App 内置一套有序更新源
+（`lib/update_sources.dart`），按顺序逐个尝试，第一个成功的胜出：
+
+```
+可选 override（向后兼容老安装） → GitHub 主源 → NAS 兜底
+```
+
+- **GitHub 主源**：`https://raw.githubusercontent.com/<仓库>/main/deploy/update`，
+  只放**无密钥控制面**（`latest-android.json` / `latest-ios.json` /
+  `remote-config.json`），匿名可读、CDN 分发、出门在外也稳定；
+- **NAS 兜底**：`UPDATE_NAS_BASE`（仓库 Variable，纯 URL 不含认证），
+  GitHub 连不上（例如境内网络）时自动回退；NAS 侧 mihomo 常开，是可靠兜底；
+- 三个基址都由 `scripts/write_bundle_defines.py` 在编译期注入，
+  代码里还保留硬编码 GitHub 兜底，本地 `flutter test` 无 dart-define 也有主源。
+
+**控制面 / 载荷分离（安全关键）**：仓库是 public、自用包内含编译期凭证，
+所以含凭证的 APK/IPA 只能发**草稿 Release**、只推 NAS，**绝不放到 GitHub**。
+GitHub 只负责「有没有新版 / 最新配置」这类无密钥 JSON，真正的安装包恒从
+**胜出源的 `payloadBase`**（设计 A 下恒为 NAS）下载。凭证不外泄。
+`BUNDLE_ALLOW_PUBLIC=1` + `UPDATE_GITHUB_PAYLOAD_BASE` 是切到「GitHub 也放完整包」
+的设计 B 开关，默认关闭，启用即等于公开含凭证包，需自行承担风险。
+
+控制面 JSON 由 CI 在每次出包后调用 `scripts/publish_control_plane.py` 提交到
+`deploy/update/` 并 push 到 `main`（commit 带 `[skip ci]`、github-actions[bot] 身份）。
+防递归三重：`[skip ci]` + 本工作流 `on.push.paths` 不含 `deploy/**` +
+job 级 `if: github.actor != 'github-actions[bot]'`。脚本发布前做**无密钥硬门禁**，
+`verify-first-build` 也有常驻 `Control-plane no-secret guard` 步骤校验这些 JSON。
 
 ### 9.1 三条通道，按平台各取所需
 
 | 平台 | 通道 | 用户要做的 | 需要重签吗 |
 |---|---|---|---|
-| Android | App 内查 NAS → 下载 APK → 系统安装器覆盖安装 | 点「下载并安装」→ 允许安装未知应用 | 否 |
+| Android | App 内查控制面 → 从 NAS 下载 APK → 系统安装器覆盖安装 | 点「下载并安装」→ 允许安装未知应用 | 否 |
 | iOS（有付费开发者账号） | **TestFlight** | 在 TestFlight App 里点「更新」 | 否 |
 | iOS（没有 TestFlight 凭证） | App 内提示 → 打开 NAS 下载页 | 自己用 Sideloadly / Xcode 重签 | 是 |
 
 iOS 不允许应用自装包，所以 TestFlight 是唯一「点一下就能更新」的官方路径。
-Android 的整包更新则完全不依赖 Apple，也不依赖 GitHub。
 
-### 9.2 NAS 清单（Android 主用，iOS 兜底）
+### 9.2 更新清单（Android 主用，iOS 兜底）
 
-部署与 Lucky 反代步骤见 [`deploy/nas/README.md`](deploy/nas/README.md)。
+部署与反代步骤见 [`deploy/nas/README.md`](deploy/nas/README.md)。
 
-App 只做一件事：`GET <更新源>/latest-android.json`（iOS 是 `latest-ios.json`）。
-清单由 `scripts/make_update_manifest.py` 从真实安装包生成：
+App 只做一件事：按有序源 `GET <控制面>/latest-android.json`（iOS 是
+`latest-ios.json`）。清单由 `scripts/make_update_manifest.py` 从真实安装包生成：
 
 ```json
 {
@@ -737,7 +766,7 @@ App 只做一件事：`GET <更新源>/latest-android.json`（iOS 是 `latest-io
 
 几个刻意的决定：
 
-- **清单里不写域名**：App 用「更新源地址 + `file`」自己拼下载地址，
+- **清单里不写域名**：App 用「胜出源的 `payloadBase` + `file`」自己拼下载地址，
   以后换域名、换端口、搬到别的机器都不用重出包。
 - **下载后必须校验 SHA-256**，不匹配就删掉文件并报错——宁可重下，
   也不能把半截包递给安装器。
@@ -745,10 +774,20 @@ App 只做一件事：`GET <更新源>/latest-android.json`（iOS 是 `latest-io
   build number（Apple 硬性要求），把它算进比较会让同一版本反复提示更新。
 - **启动静默检查一天最多一次**，失败完全不打扰；设置页有「检查更新」可手动触发。
 - 下载目录只保留当前这一个包，装完/失败都不会把缓存越攒越大。
+- **多源回退**：GitHub 主源连不上（如境内网络）自动回退 NAS，
+  每个源的失败都带标签合并显示，一眼能看出是哪一个不通。
 
-CI 里配了 `NAS_HOST` / `NAS_PORT` / `NAS_USER` / `NAS_SSH_KEY` / `NAS_UPDATE_DIR`
-五个 Secrets 后，出包会自动把 APK/IPA 与清单推上去；缺任何一个就跳过推送，
-不影响出包本身。
+CI 需要的配置：
+
+| 类型 | 名称 | 用途 |
+|---|---|---|
+| Variable | `UPDATE_NAS_BASE` | NAS 控制面 + 载荷基址，如 `https://weihan.example.com/data`；**配了才有 NAS 兜底与载荷下载**（不含认证） |
+| Variable | `UPDATE_GITHUB_PAYLOAD_BASE` | 仅设计 B（`BUNDLE_ALLOW_PUBLIC=1`）才设，默认空 |
+| Secret ×5 | `NAS_HOST` / `NAS_PORT` / `NAS_USER` / `NAS_SSH_KEY` / `NAS_UPDATE_DIR` | 出包后 scp 把 APK/IPA/清单/配置推上 NAS；缺任一则跳过推送，不影响出包 |
+
+`UPDATE_GITHUB_BASE` 由工作流按 `${{ github.repository }}` 自动生成，无需配置。
+没配 `UPDATE_NAS_BASE` 时仍能查到版本 / 同步热配置（走 GitHub 主源），
+只是整包 APK 下载会落到 GitHub、拿到可读的失败原因——分发用的都是配好的 CI 自用包。
 
 ### 9.3 iOS：TestFlight 自动上传
 
@@ -784,8 +823,11 @@ CI 里配了 `NAS_HOST` / `NAS_PORT` / `NAS_USER` / `NAS_SSH_KEY` / `NAS_UPDATE_
 ### 9.4 安全边界
 
 - TestFlight 构建同样含内置凭证，但只分发给「内部测试员」（你自己），不公开；
-- NAS 上只有安装包与清单，**没有任何密钥**；凭证在包里，不在服务端；
-- 清单响应带 `Cache-Control: no-store`，避免发了新版却查到旧清单；
+- NAS 与 GitHub 控制面上只有安装包 / 清单 / 配置 JSON，**没有任何密钥**；
+  凭证在包里，不在服务端；含凭证包只进 NAS 与草稿 Release，绝不上 GitHub；
+- 控制面 JSON 发布前有无密钥硬门禁（`publish_control_plane.py` + 常驻
+  `Control-plane no-secret guard`），混入 `secrets` 即判红；
+- 清单 / 配置响应带 `Cache-Control: no-store`，避免发了新版却查到旧清单；
 - 公开仓库的草稿 Release 机制不变，匿名访客仍然看不到任何含凭证的包。
 
 ### 9.5 手动发一次
@@ -794,7 +836,12 @@ CI 里配了 `NAS_HOST` / `NAS_PORT` / `NAS_USER` / `NAS_SSH_KEY` / `NAS_UPDATE_
 python3 scripts/make_update_manifest.py --platform android \
   --file weihan-selfuse-arm64.apk --name weihan-selfuse-arm64.apk \
   --notes "更新内容" --out latest-android.json
-scp weihan-selfuse-arm64.apk latest-android.json nas:/volume1/docker/weihan-update/data/
+# NAS：安装包 + 清单 + 热配置一起推
+scp weihan-selfuse-arm64.apk latest-android.json deploy/update/remote-config.json \
+  nas:/volume1/docker/weihan-update/data/
+# GitHub 控制面：只发布无密钥清单（校验通过后以 [skip ci] 提交到 deploy/update/）
+python3 scripts/publish_control_plane.py --manifest latest-android.json \
+  --name latest-android.json --push
 ```
 
 发版前记得 **同时** 改 `pubspec.yaml` 的 `version:` 与 `lib/app_version.dart` 的
@@ -811,7 +858,7 @@ Flutter 的 **release 是 AOT**：Dart 代码在出包时已编译成机器码�
 
 | 层 | 能改什么 | 是否免重装 | 数据来源 | 现状 |
 |---|---|---|---|---|
-| **L1 热配置 / 远程配置** | 断句、预译、会话轮换、开关、文案、术语表、翻译后端选择等**数据/参数** | 是 | 自建 NAS 的 `remote-config.json` | **已实现** |
+| **L1 热配置 / 远程配置** | 断句、预译、会话轮换、开关、文案、术语表、翻译后端选择等**数据/参数** | 是 | 内置 GitHub 主源 + NAS 兜底的 `remote-config.json` | **已实现** |
 | **L2 代码推送** | 已编译的 **Dart 逻辑差分** | 是 | Shorebird 云 | 未启用（闸门后可选） |
 
 > 「检查更新」按钮走的是**整包更新**：下载完整 APK 并调系统安装器重装，
@@ -825,8 +872,10 @@ Shorebird 云（不能自托管）、基线要用其 Flutter fork 重新出包�
 
 ### 10.2 热配置怎么用
 
-配置文件放在**与 `latest-android.json` 同一个 NAS 目录**（共用「更新源地址」），
-字段与示例见 [`deploy/nas/README.md` 第 7 节](deploy/nas/README.md#7-热配置-remote-configjson)。
+配置文件是**无密钥控制面**之一：仓库里的 `deploy/update/remote-config.json` 由 CI
+发布到 GitHub 主源，并同步推到 NAS（与 `latest-android.json` 同目录）。GitHub 连不上
+会自动回退 NAS。字段与示例见
+[`deploy/nas/README.md` 第 7 节](deploy/nas/README.md#7-热配置-remote-configjson)。
 改完把 `configVersion` 加一即可，App 有两种触发：
 
 - **冷启动静默同步**：一天最多一次，失败不打扰；
@@ -839,8 +888,9 @@ Shorebird 云（不能自托管）、基线要用其 Flutter fork 重新出包�
 
 - **Tier A 行为类**（断句 / 预译 / 开关 / 文案 / glossary / prompt）默认即可生效；
 - **Tier B 敏感类**（服务商、endpoint、vcn、密钥）默认**全部跳过**，需在设置页
-  打开「信任远程配置的服务商/端点/密钥覆盖」，且 endpoint 的 host 必须等于
-  更新源地址的 host（只能指向自己的 NAS 代理）；
+  打开「信任远程配置的服务商/端点/密钥覆盖」，且 endpoint 的 host 必须在
+  **所有内置源的 host 白名单**内（`UpdateSources.sourceHosts`：GitHub + NAS + override），
+  避免「配置从 GitHub 取、端点却在别的 host」被误拒；
 - **密钥**最严格：App 侧 `trustSecrets` 恒关，即便开信任也不下发；
   **自带凭证的自用包永不被任何远程密钥覆盖**；密钥只在进程内存里生效，
   绝不写入缓存、绝不回显、绝不落盘；

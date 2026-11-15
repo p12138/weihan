@@ -2,8 +2,8 @@
 //
 // 与 `UpdateNotifier` 并列但**刻意分开**：整包更新是「有新包 + 横幅 + 用户
 // 去装」，配置同步是「静默、即时生效、无横幅」；塞进同一个 `available`
-// 会互相干扰，也会共用同一个日节流时间戳。两者共用 `UpdateGateway` 与
-// `UpdateStore.readBaseUrl()`，既隔离又复用。
+// 会互相干扰，也会共用同一个日节流时间戳。两者共用 `UpdateGateway` 与内置
+// 有序源 `UpdateSources`（GitHub 主源 + NAS 兜底，免手填），既隔离又复用。
 //
 // 触发点有两个，都在 `main()` 的启动页回调 / 设置页按钮里，widget 测试 pump
 // `const BaseApp()` 不进 splash、不碰网络与文件系统（见 update_notifier.dart:10）。
@@ -14,7 +14,7 @@ import 'remote_config.dart';
 import 'remote_config_service.dart';
 import 'remote_config_state.dart';
 import 'remote_config_store.dart';
-import 'update_store.dart';
+import 'update_sources.dart';
 
 class RemoteConfigNotifier extends ChangeNotifier {
   RemoteConfigNotifier._();
@@ -55,11 +55,7 @@ class RemoteConfigNotifier extends ChangeNotifier {
     bool force = false,
   }) async {
     final RemoteConfigStore cache = store ?? RemoteConfigStore();
-    final String base = UpdateStore.readBaseUrl();
-    if (base.trim().isEmpty) {
-      // 没配更新源就什么都不做：这不是错误，只是没启用。
-      return null;
-    }
+    // 内置 GitHub 主源恒存在，不再有「没配更新源」这一状态：不再早退。
     if (!force) {
       final DateTime? last = cache.readLastSync();
       if (last != null &&
@@ -67,7 +63,7 @@ class RemoteConfigNotifier extends ChangeNotifier {
         return null;
       }
     }
-    return _run(base, service: service, store: cache);
+    return _run(service: service, store: cache);
   }
 
   /// 手动同步：绕过日节流，返回结果供界面显示一行状态。
@@ -76,64 +72,48 @@ class RemoteConfigNotifier extends ChangeNotifier {
     RemoteConfigStore? store,
   }) async {
     final RemoteConfigStore cache = store ?? RemoteConfigStore();
-    final String base = UpdateStore.readBaseUrl();
-    if (base.trim().isEmpty) {
-      // 没配地址也返回 empty 结果，让界面能显示「先填更新源地址」。
-      return const RemoteConfigFetch(
-        config: RemoteConfig.empty,
-        source: RemoteConfigSource.empty,
-        error: '还没有配置更新源地址',
-      );
-    }
-    return _run(base, service: service, store: cache);
+    return _run(service: service, store: cache);
   }
 
-  Future<RemoteConfigFetch> _run(
-    String base, {
+  Future<RemoteConfigFetch> _run({
     RemoteConfigService? service,
     required RemoteConfigStore store,
   }) async {
     _syncing = true;
     notifyListeners();
 
+    // 生产走内置有序源（GitHub 主源 + NAS 兜底）；不传 base。
     final RemoteConfigFetch result = await (service ??
             debugService ??
             RemoteConfigService(store: store))
-        .fetch(base);
+        .fetch();
 
-    // 构建应用选项：信任开关来自落盘值；host 白名单 = 更新源的 host。
-    final RemoteConfigApplyOptions options = _buildOptions(base, store);
+    // 构建应用选项：信任开关来自落盘值；host 白名单含所有源（GitHub + NAS），
+    // 否则配置从 GitHub 取、端点却在 NAS 时会被误拒。
+    final RemoteConfigApplyOptions options = _buildOptions(store);
     applyRemoteConfig(result.config, options: options);
 
     _current = result.config;
     _source = result.source;
     _error = result.error ?? '';
-    _lastSync = DateTime.now();
-    store.writeLastSync(_lastSync!);
+    // 只在真正取到新配置时写节流时间戳；失败不写，下次冷启动会重试，
+    // 否则一次断网会压住 24h 不再同步。
+    if (result.isFresh) {
+      _lastSync = DateTime.now();
+      store.writeLastSync(_lastSync!);
+    }
     _syncing = false;
     notifyListeners();
     return result;
   }
 
-  RemoteConfigApplyOptions _buildOptions(
-    String base,
-    RemoteConfigStore store,
-  ) {
-    final Set<String> hosts = <String>{};
-    try {
-      final String host = Uri.parse(base.trim()).host.toLowerCase();
-      if (host.isNotEmpty) {
-        hosts.add(host);
-      }
-    } on Object {
-      // base 已在 fetch 里校验过；这里解析失败就留空，URL 校验会更严格。
-    }
+  RemoteConfigApplyOptions _buildOptions(RemoteConfigStore store) {
     return RemoteConfigApplyOptions(
       trustSensitive: store.readTrustSensitive(),
       // 密钥永不下发：即便打开信任开关，也不开 trustSecrets，
       // 与「内置凭证包不被覆盖」双保险。要开启需另行增强。
       trustSecrets: false,
-      allowedHosts: hosts,
+      allowedHosts: UpdateSources.instance.sourceHosts,
     );
   }
 

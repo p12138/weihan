@@ -61,6 +61,18 @@ jobs:
       - name: Static self-check (structure / deps / secrets)
         run: python3 scripts/verify_project.py --scope all
 
+      # 公开控制面（deploy/update/*.json）只许放无密钥 JSON：GitHub 主源匿名可读，
+      # 一旦混入 secrets / 凭证键必须判红，绝不能发布出去。
+      - name: Control-plane no-secret guard
+        run: |
+          shopt -s nullglob
+          files=(deploy/update/*.json)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::deploy/update/ 下没有任何控制面 JSON"
+            exit 1
+          fi
+          python3 scripts/publish_control_plane.py --validate-only "${files[@]}"
+
       # 图标由脚本从 brand/ 母版生成；同时守住「冷启动不再出现缩小版启动页」：
       # 旧位图文件、原生层对它的引用、Android 12+ 的系统小图标都要在这里判红。
       - name: Brand assets check (icons / splash)

@@ -38,6 +38,15 @@ OPTIONAL: dict[str, tuple[str, str]] = {
     "XFYUN_ZH_VCN": ("XFYUN_ZH_VCN", "x4_xiaoyan"),
     "TRANSLATOR_ENDPOINT": ("TRANSLATOR_ENDPOINT", ""),
     "XFYUN_SPEECH_ENDPOINT": ("XFYUN_SPEECH_ENDPOINT", ""),
+    # 内置更新源（控制面 / 载荷面分离，见 lib/update_sources.dart）。
+    # 三个都是 URL、不含任何凭证；缺失时留空，App 有硬编码 GitHub 兜底。
+    # UPDATE_GITHUB_BASE   : 公开控制面（raw.githubusercontent.com，无密钥 JSON）
+    # UPDATE_NAS_BASE      : NAS 侧同一批 JSON + 真正的 APK 载荷
+    # UPDATE_GITHUB_PAYLOAD_BASE : 仅 BUNDLE_ALLOW_PUBLIC=1（设计 B）才设置，
+    #                             让 GitHub 也承载完整 APK；默认空 → 载荷恒在 NAS。
+    "UPDATE_GITHUB_BASE": ("UPDATE_GITHUB_BASE", ""),
+    "UPDATE_NAS_BASE": ("UPDATE_NAS_BASE", ""),
+    "UPDATE_GITHUB_PAYLOAD_BASE": ("UPDATE_GITHUB_PAYLOAD_BASE", ""),
 }
 
 

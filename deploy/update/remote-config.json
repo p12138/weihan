@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "configVersion": 1,
+  "notes": "公开控制面：只含 Tier-A 安全项，绝不含 secrets / 服务商 / 端点 / 密钥。改热配置请改本文件并 push，CI 会同步到 GitHub 与 NAS。",
+  "segmentation": {
+    "silenceMs": 700,
+    "maxSentenceMs": 10000,
+    "maxZhChars": 60,
+    "maxUgChars": 200,
+    "minDraftZhChars": 6,
+    "minDraftUgChars": 10,
+    "draftGapMs": 1200,
+    "maxDraftsPerSentence": 1
+  },
+  "interpreter": {
+    "pretranslate": true,
+    "rotateAfterMs": 45000,
+    "forceRotateAfterMs": 54000,
+    "maxSessionFailures": 2
+  },
+  "features": {
+    "continuousInterpretation": true,
+    "remoteConfig": true
+  },
+  "strings": {
+    "configSyncLabel": "立即同步配置（热配置·免重装）"
+  }
+}

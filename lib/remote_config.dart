@@ -1,9 +1,10 @@
 // 远程配置（热配置）模型：纯 Dart、无 I/O。
 //
-// 这是「不重装改行为」的数据载体。放在 NAS 的 `remote-config.json` 被取回后
-// 解析成不可变的 [RemoteConfig]，再由 `apply_remote_config` 里的安全白名单
-// 决定哪些字段真的生效。它**不能**替换已编译进 APK 的 Dart 逻辑 —— Flutter
-// release 是 AOT，JSON 改不了函数体与 widget 结构，这一点见 README 第 10 节。
+// 这是「不重装改行为」的数据载体。内置有序更新源（GitHub 主源 + NAS 兜底，
+// 见 `update_sources.dart`）取回 `remote-config.json` 后解析成不可变的
+// [RemoteConfig]，再由 `apply_remote_config` 里的安全白名单决定哪些字段真的生效。
+// 它**不能**替换已编译进 APK 的 Dart 逻辑 —— Flutter release 是 AOT，
+// JSON 改不了函数体与 widget 结构，这一点见 README 第 10 节。
 //
 // 解析风格对齐 `update_manifest.dart`：严格门禁 + 「宁可报错也不猜」；但字段
 // 一律可选/可空，null 或空串 = 「沿用当前值」（与内置凭证「留空=沿用」同源）。

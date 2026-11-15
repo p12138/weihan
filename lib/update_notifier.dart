@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'app_version.dart';
 import 'update_manifest.dart';
 import 'update_service.dart';
+import 'update_sources.dart';
 import 'update_store.dart';
 
 /// 后台静默检查的唯一入口。
@@ -15,11 +16,20 @@ class UpdateNotifier extends ChangeNotifier {
   static final UpdateNotifier instance = UpdateNotifier._();
 
   UpdateManifest? _available;
+  UpdateSource? _winningSource;
+  Uri? _manifestUri;
 
   /// 查到的新版本；没有就是 null。界面据此决定要不要显示横幅。
   UpdateManifest? get available => _available;
 
   bool get hasUpdate => _available != null;
+
+  /// 这次检查胜出的更新源（GitHub / NAS）。横幅进对话框时要带上，
+  /// 保证下载 APK 用的是该源的载荷地址（设计 A：GitHub 胜出、载荷在 NAS）。
+  UpdateSource? get winningSource => _winningSource;
+
+  /// 胜出源实际取到的清单地址，传给 [UpdateDialog] 避免回退后仍去主源下载。
+  Uri? get manifestUri => _manifestUri;
 
   /// 当前安装的版本，显示用。
   String get currentVersion => kAppVersion;
@@ -27,15 +37,11 @@ class UpdateNotifier extends ChangeNotifier {
   /// 静默检查：默认一天最多一次，失败不弹任何东西。
   ///
   /// [force] 供设置页「检查更新」使用——用户主动点的就必须真的去查。
+  /// 内置 GitHub 主源恒存在，不再有「没填地址就跳过」这一状态。
   Future<UpdateCheck?> checkInBackground({
     UpdateService? service,
     bool force = false,
   }) async {
-    final String base = UpdateStore.readBaseUrl();
-    if (base.trim().isEmpty) {
-      // 没配更新源就什么都不做：这不是错误，只是没启用。
-      return null;
-    }
     if (!force) {
       final DateTime? last = UpdateStore.readLastCheck();
       if (last != null &&
@@ -43,10 +49,16 @@ class UpdateNotifier extends ChangeNotifier {
         return null;
       }
     }
-    UpdateStore.writeLastCheck(DateTime.now());
 
-    final UpdateCheck result =
-        await (service ?? UpdateService()).check(base);
+    // 走内置有序源：GitHub 主源优先，连不上自动回退 NAS。
+    final UpdateCheck result = await (service ?? UpdateService()).check();
+    if (result.status == UpdateCheckStatus.failed) {
+      // 全源失败不写节流时间戳：否则一次断网会压住 24h 不再重试。
+      return result;
+    }
+    UpdateStore.writeLastCheck(DateTime.now());
+    _winningSource = result.source;
+    _manifestUri = result.manifestUri;
     if (result.status == UpdateCheckStatus.available) {
       _available = result.manifest;
       notifyListeners();
@@ -67,5 +79,7 @@ class UpdateNotifier extends ChangeNotifier {
   @visibleForTesting
   void reset() {
     _available = null;
+    _winningSource = null;
+    _manifestUri = null;
   }
 }

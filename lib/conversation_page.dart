@@ -24,7 +24,7 @@ import 'translation_config.dart';
 import 'update_dialog.dart';
 import 'update_manifest.dart';
 import 'update_notifier.dart';
-import 'update_store.dart';
+import 'update_sources.dart';
 
 /// 向上滑过这么多逻辑像素就进「松开取消」区。公开常量，测试不用写魔法数。
 const double kCancelDragDistance = 96;
@@ -1020,17 +1020,24 @@ class _ConversationPageState extends State<ConversationPage>
   }
 
   /// 从横幅进入更新：清单已经在后台查过，直接带着它打开对话框，不再请求一次。
+  /// 同时把胜出源与清单地址带过去，保证下载用的是对的载荷地址（设计 A：
+  /// 清单可能来自 GitHub，但 APK 恒在 NAS）。
   Future<void> _openUpdate() async {
-    final UpdateManifest? manifest = UpdateNotifier.instance.available;
+    final UpdateNotifier notifier = UpdateNotifier.instance;
+    final UpdateManifest? manifest = notifier.available;
     await showDialog<void>(
       context: context,
-      builder: (BuildContext context) => UpdateDialog(manifest: manifest),
+      builder: (BuildContext context) => UpdateDialog(
+        manifest: manifest,
+        manifestUri: notifier.manifestUri,
+        source: notifier.winningSource,
+      ),
     );
     if (!mounted) {
       return;
     }
     // 装完/关掉后清掉横幅：新版本是否真的生效由下次启动时的版本号说了算。
-    UpdateNotifier.instance.dismiss();
+    notifier.dismiss();
   }
 
   @override
@@ -2538,7 +2545,6 @@ class _SettingsDialogState extends State<_SettingsDialog> {
   late final TextEditingController _xfUgVcnController;
   late final TextEditingController _xfZhVcnController;
   late final TextEditingController _xfEndpointController;
-  late final TextEditingController _updateBaseController;
   late TranslationProvider _provider;
 
   /// 「立即同步配置」的结果提示（一行状态）。
@@ -2575,9 +2581,6 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     _xfZhVcnController = TextEditingController(text: speechConfig.zhVcn);
     _xfEndpointController =
         TextEditingController(text: speechConfig.endpoint);
-    // 更新源不是密钥，可以落盘：下次冷启动不用再填一遍。
-    _updateBaseController =
-        TextEditingController(text: UpdateStore.readBaseUrl());
   }
 
   void _onPaletteChanged() {
@@ -2592,13 +2595,12 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     }
   }
 
-  /// 设置页「立即同步配置」：把输入框里的地址落盘，再手动同步一次。
-  /// 与整包「检查更新」分开，结果只显示成一行状态，不弹对话框、不装包。
+  /// 设置页「立即同步配置」：手动同步一次（内置 GitHub 主源 + NAS 兜底，
+  /// 无需填写地址）。与整包「检查更新」分开，只显示一行状态、不装包。
   Future<void> _syncConfig() async {
     if (_syncingConfig) {
       return;
     }
-    UpdateStore.writeBaseUrl(_updateBaseController.text);
     setState(() {
       _syncingConfig = true;
       _configStatus = '正在同步…';
@@ -2621,7 +2623,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     if (result.source == RemoteConfigSource.cache) {
       return '网络不可用，沿用上次缓存 v${result.config.configVersion}';
     }
-    return result.error ?? '暂未启用（先填更新源地址并放好 remote-config.json）';
+    return result.error ?? '暂无可用配置（GitHub / NAS 均不可达）';
   }
 
   /// AnimatedBuilder 的内容：配置版本 / 上次同步时间 / 本次结果，合成一行。
@@ -2672,7 +2674,6 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     _xfUgVcnController.dispose();
     _xfZhVcnController.dispose();
     _xfEndpointController.dispose();
-    _updateBaseController.dispose();
     super.dispose();
   }
 
@@ -2702,15 +2703,12 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     speechConfig.ugVcn = _xfUgVcnController.text.trim();
     speechConfig.zhVcn = _xfZhVcnController.text.trim();
     speechConfig.endpoint = _xfEndpointController.text.trim();
-    // 更新源不是密钥，落盘保存；留空表示回到构建期内置的地址。
-    UpdateStore.writeBaseUrl(_updateBaseController.text);
     Navigator.of(context).pop();
   }
 
-  /// 设置页里的「检查更新」：先把输入框里的地址落盘，再打开对话框，
-  /// 避免用户改了地址却没点保存、结果查到的是旧地址。
+  /// 设置页里的「检查更新」：直接打开对话框，走内置有序更新源
+  /// （GitHub 主源优先、连不上自动回退 NAS），无需填写任何地址。
   Future<void> _openUpdateDialog() async {
-    UpdateStore.writeBaseUrl(_updateBaseController.text);
     await showDialog<void>(
       context: context,
       builder: (BuildContext context) => const UpdateDialog(),
@@ -2927,14 +2925,31 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                           '整包要重装；热配置免重装'),
                     ),
                     const SizedBox(height: 12),
-                    TextField(
-                      key: const ValueKey<String>('update-base-field'),
-                      controller: _updateBaseController,
-                      style: const TextStyle(fontSize: 14.5),
-                      keyboardType: TextInputType.url,
-                      decoration: const InputDecoration(
-                        labelText: '更新源地址（整包与配置共用，留空用内置）',
-                        hintText: 'https://weihan.example.com/weihan',
+                    // 更新源已内置：GitHub 主源 + NAS 兜底，用户不再手填地址。
+                    // 只读说明行，顺带把当前生效的有序源列出来，便于排查。
+                    Container(
+                      key: const ValueKey<String>('update-source-line'),
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: AppColors.card,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: AppColors.line),
+                      ),
+                      child: Row(
+                        children: <Widget>[
+                          Icon(Icons.cloud_outlined,
+                              size: 16, color: AppColors.primaryDeep),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              '更新源：${UpdateSources.instance.ordered().map((UpdateSource s) => s.label).join(' → ')}（内置，无需填写）',
+                              style: TextStyle(
+                                  fontSize: 11.5, color: AppColors.inkMuted),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                     const SizedBox(height: 10),

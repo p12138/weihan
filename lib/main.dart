@@ -20,11 +20,11 @@ void main() {
     // 权限依然是「提前问」，只是提前到用户准备开始说话之前，不是按住那一刻。
     onSplashFinished: () {
       unawaited(primeMicrophonePermission());
-      // 静默检查更新：一天最多一次，失败不打扰（出门没网是常态）。
-      // 放在启动页之后，不与首屏渲染和权限弹窗抢时间。
+      // 静默检查更新：内置 GitHub 主源优先、连不上自动回退 NAS，无需手填地址。
+      // 一天最多一次，失败不打扰（出门没网是常态），失败不写节流时间戳以便重试。
       unawaited(UpdateNotifier.instance.checkInBackground());
-      // 静默同步远程配置（热配置）：同一套日节流，失败回退缓存、不打扰。
-      // 断句/预译等参数在下次「开始同传」时读取，无需重启。
+      // 静默同步远程配置（热配置）：同一套内置有序源与日节流，失败回退缓存。
+      // 断句/预译等参数在下次「开始同传」时读取，无需重启、无需重装。
       unawaited(RemoteConfigNotifier.instance.checkInBackground());
     },
   ));

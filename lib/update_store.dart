@@ -1,9 +1,14 @@
 import 'dart:io';
 
-/// 更新源地址与「上次静默检查时间」的落盘。
+/// 「可选覆盖更新源」与「上次静默检查时间」的落盘。
 ///
 /// 和 `PaletteStore` 同样的取舍：不为此引入 shared_preferences 这种平台插件，
-/// 只写一个纯文本小文件。丢了也无所谓——更新源回到默认值，下次还能手动改。
+/// 只写一个纯文本小文件。丢了也无所谓——回到内置源。
+///
+/// 现在更新源默认内置（GitHub 主源 + NAS 兜底，见 `update_sources.dart`），
+/// 设置页不再让用户填写地址。这个文件保留为**向后兼容的可选 override**：
+/// 老安装里手工填过的地址仍会被 `UpdateSources.ordered()` 作为首选源读取，
+/// 新安装留空即走内置源。`compiledBase` 由 `UPDATE_BASE` 编译期注入（可选）。
 class UpdateStore {
   UpdateStore._();
 

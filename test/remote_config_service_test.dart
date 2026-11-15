@@ -10,6 +10,7 @@ import 'package:uyghur_interpreter/remote_config_service.dart';
 import 'package:uyghur_interpreter/remote_config_state.dart';
 import 'package:uyghur_interpreter/remote_config_store.dart';
 import 'package:uyghur_interpreter/update_service.dart';
+import 'package:uyghur_interpreter/update_sources.dart';
 import 'package:uyghur_interpreter/update_store.dart';
 import 'package:uyghur_interpreter/translation_config.dart';
 import 'package:uyghur_interpreter/speech_config.dart';
@@ -29,10 +30,18 @@ class _FakeGateway implements UpdateGateway {
   int calls = 0;
   Uri? lastUri;
 
+  /// 多源回退测试用：host 命中该子串的 URI 抛 [failError]，其余返回 [body]。
+  /// 不设置时行为与老用例完全一致（[error] 决定整体失败与否）。
+  String? failHostContains;
+  Object failError = const SocketException('offline');
+
   @override
   Future<String> getText(Uri uri) async {
     calls += 1;
     lastUri = uri;
+    if (failHostContains != null && uri.host.contains(failHostContains!)) {
+      throw failError;
+    }
     if (error != null) {
       throw error!;
     }
@@ -156,6 +165,33 @@ void main() {
       expect(result.source, RemoteConfigSource.empty);
       expect(result.error, isNotNull);
     });
+
+    test('GitHub 主源失败自动回退 NAS（有序多源，免手填）', () async {
+      UpdateStore.writeBaseUrl('');
+      gateway.body = _configJson(version: 8, silenceMs: 640);
+      gateway.failHostContains = 'gh.example.com';
+      final RemoteConfigService svc = RemoteConfigService(
+        gateway: gateway,
+        store: store(),
+        sources: UpdateSources(
+          githubBase: 'https://gh.example.com/ctl',
+          nasBase: 'https://nas.example.com/ctl',
+        ),
+      );
+
+      final RemoteConfigFetch result = await svc.fetch();
+      expect(result.isFresh, isTrue);
+      expect(result.config.configVersion, 8);
+      expect(result.winningSource?.id, 'nas');
+      expect(
+        result.configUri.toString(),
+        'https://nas.example.com/ctl/remote-config.json',
+      );
+      expect(result.attempts.length, 1);
+      expect(result.attempts.first.source.id, 'github');
+      expect(result.attempts.first.kind, UpdateErrorKind.network);
+      expect(gateway.calls, 2);
+    });
   });
 
   group('RemoteConfigStore', () {
@@ -230,15 +266,43 @@ void main() {
       expect(remoteConfigState.configVersion, 9);
     });
 
-    test('未配更新源时 sync 返回可读错误，不请求网络', () async {
+    // 新契约：更新源内置（GitHub 主源 + NAS 兜底），用户不再手填地址，
+    // 因此「没配更新源」不再等于「不请求网络」——内置主源恒存在。
+    test('免手填：未配更新源仍走内置 GitHub 主源并生效', () async {
+      UpdateStore.writeBaseUrl(''); // 用户不再手填地址
+      gateway.body = _configJson(version: 6, silenceMs: 680);
+
+      final RemoteConfigFetch result = await RemoteConfigNotifier.instance.sync(
+        service: service(),
+        store: store(),
+      );
+      expect(result.isFresh, isTrue);
+      expect(result.winningSource?.id, 'github');
+      expect(
+        result.configUri.toString(),
+        '${UpdateSources.fallbackGithubBase}/remote-config.json',
+      );
+      expect(gateway.calls, 1, reason: '内置主源恒存在，必须真的去查一次');
+      expect(gateway.lastUri!.host, 'raw.githubusercontent.com');
+      expect(remoteConfigState.configVersion, 6);
+      expect(remoteConfigState.segmenter.silenceMs, 680);
+      expect(result.error, isNull);
+    });
+
+    test('内置源失败时回退 empty 并给可读错误，且确实尝试过网络', () async {
       UpdateStore.writeBaseUrl('');
+      gateway.error = const SocketException('offline');
+
       final RemoteConfigFetch result = await RemoteConfigNotifier.instance.sync(
         service: service(),
         store: store(),
       );
       expect(result.source, RemoteConfigSource.empty);
-      expect(result.error, contains('还没有配置'));
-      expect(gateway.calls, 0);
+      expect(result.error, contains('连不上更新服务器'));
+      expect(result.attempts, isNotEmpty);
+      expect(gateway.calls, greaterThanOrEqualTo(1));
+      expect(RemoteConfigNotifier.instance.lastSync, isNull,
+          reason: '失败不写节流时间戳，下次冷启动会重试');
     });
   });
 }

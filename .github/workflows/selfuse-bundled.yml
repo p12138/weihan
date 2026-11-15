@@ -177,6 +177,14 @@ jobs:
       XFYUN_API_SECRET: ${{ secrets.XFYUN_API_SECRET }}
       XFYUN_UG_VCN: ${{ secrets.XFYUN_UG_VCN }}
       XFYUN_ZH_VCN: ${{ vars.XFYUN_ZH_VCN }}
+      # 内置更新源（控制面 / 载荷分离，见 lib/update_sources.dart）。三个都是
+      # URL、不含任何凭证，由 write_bundle_defines.py 注入 --dart-define-from-file：
+      #   UPDATE_GITHUB_BASE          GitHub 公开控制面（无密钥 JSON）
+      #   UPDATE_NAS_BASE             NAS 兜底控制面 + 真正的 APK 载荷
+      #   UPDATE_GITHUB_PAYLOAD_BASE  仅设计 B（BUNDLE_ALLOW_PUBLIC=1）才设置
+      UPDATE_GITHUB_BASE: https://raw.githubusercontent.com/${{ github.repository }}/main/deploy/update
+      UPDATE_NAS_BASE: ${{ vars.UPDATE_NAS_BASE }}
+      UPDATE_GITHUB_PAYLOAD_BASE: ${{ vars.UPDATE_GITHUB_PAYLOAD_BASE }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -474,6 +482,18 @@ jobs:
             --notes "融合 ${VERSION} · 构建 #${GITHUB_RUN_NUMBER}" \
             --out dist/latest-android.json
 
+      # 设计 A：GitHub 只放无密钥控制面。把刚生成的 Android 清单连同静态
+      # remote-config.json 落到 deploy/update/ 并 push 到 main（[skip ci]）。
+      # 含凭证 APK 仍在草稿 Release / NAS，绝不入库；脚本会先做无密钥硬门禁。
+      - name: 发布 Android 控制面（无密钥 JSON，[skip ci]）
+        if: ${{ github.actor != 'github-actions[bot]' }}
+        run: |
+          set -euo pipefail
+          python3 scripts/publish_control_plane.py \
+            --manifest dist/latest-android.json \
+            --name latest-android.json \
+            --push
+
       - name: 推送到 NAS（配了 NAS_HOST 才执行）
         if: env.NAS_HOST != ''
         env:
@@ -492,9 +512,10 @@ jobs:
           scp -P "$port" -i "$key" -o StrictHostKeyChecking=accept-new \
             build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
             dist/latest-android.json \
+            deploy/update/remote-config.json \
             "$NAS_USER@$NAS_HOST:$dir/"
           rm -f "$key"
-          echo "::notice::APK 与 latest-android.json 已推送到 NAS"
+          echo "::notice::APK / 控制面 JSON（清单 + remote-config.json）已推送到 NAS"
 
       - name: 公开仓库说明（只出草稿包）
         if: ${{ needs.guard.outputs.artifact != 'true' }}
@@ -527,6 +548,10 @@ jobs:
       XFYUN_API_SECRET: ${{ secrets.XFYUN_API_SECRET }}
       XFYUN_UG_VCN: ${{ secrets.XFYUN_UG_VCN }}
       XFYUN_ZH_VCN: ${{ vars.XFYUN_ZH_VCN }}
+      # 内置更新源（控制面 / 载荷分离），与 bundled-apk 保持完全一致。
+      UPDATE_GITHUB_BASE: https://raw.githubusercontent.com/${{ github.repository }}/main/deploy/update
+      UPDATE_NAS_BASE: ${{ vars.UPDATE_NAS_BASE }}
+      UPDATE_GITHUB_PAYLOAD_BASE: ${{ vars.UPDATE_GITHUB_PAYLOAD_BASE }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -698,6 +723,18 @@ jobs:
             --notes "融合 ${VERSION} · 构建 #${GITHUB_RUN_NUMBER}（未签名，需重签后安装）" \
             --out dist/latest-ios.json
 
+      # 设计 A：iOS 清单同样发布到无密钥控制面（[skip ci]）。
+      # needs:[guard,bundled-apk] 已串行化，两个 job 的顺序 push 由脚本内
+      # git pull --rebase 兜底，不会互相覆盖。
+      - name: 发布 iOS 控制面（无密钥 JSON，[skip ci]）
+        if: ${{ github.actor != 'github-actions[bot]' }}
+        run: |
+          set -euo pipefail
+          python3 scripts/publish_control_plane.py \
+            --manifest dist/latest-ios.json \
+            --name latest-ios.json \
+            --push
+
       - name: 推送到 NAS（配了 NAS_HOST 才执行）
         if: env.NAS_HOST != ''
         env:
@@ -716,9 +753,10 @@ jobs:
           scp -P "$port" -i "$key" -o StrictHostKeyChecking=accept-new \
             dist/weihan-selfuse-ios-unsigned.ipa \
             dist/latest-ios.json \
+            deploy/update/remote-config.json \
             "$NAS_USER@$NAS_HOST:$dir/"
           rm -f "$key"
-          echo "::notice::IPA 与 latest-ios.json 已推送到 NAS"
+          echo "::notice::IPA / 控制面 JSON（清单 + remote-config.json）已推送到 NAS"
 
       - name: 清理 runner 临时凭证文件
         if: always()
@@ -746,6 +784,10 @@ jobs:
       ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+      # 内置更新源（控制面 / 载荷分离）：TestFlight 版也要能同步热配置。
+      UPDATE_GITHUB_BASE: https://raw.githubusercontent.com/${{ github.repository }}/main/deploy/update
+      UPDATE_NAS_BASE: ${{ vars.UPDATE_NAS_BASE }}
+      UPDATE_GITHUB_PAYLOAD_BASE: ${{ vars.UPDATE_GITHUB_PAYLOAD_BASE }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

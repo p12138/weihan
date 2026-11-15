@@ -7,17 +7,29 @@ import 'glass.dart';
 import 'theme.dart';
 import 'update_manifest.dart';
 import 'update_service.dart';
-import 'update_store.dart';
+import 'update_sources.dart';
 
 /// 软件更新对话框：检查 → 下载 → 校验 → 交给系统。
 ///
 /// 入口有两个：设置页的「检查更新」，以及启动后横幅点进来（那时已经知道
 /// 有新版本，直接传 [manifest]，不再重复请求）。
+///
+/// [manifestUri] / [source] 由横幅路径从 UpdateNotifier 传入：多源回退后，
+/// 必须用**胜出源**的载荷地址下载，否则 GitHub 清单胜出时会误去 GitHub 下 APK
+/// （设计 A 下那儿根本没有包）。设置页路径则由 [UpdateService.check] 结果回填。
 class UpdateDialog extends StatefulWidget {
-  const UpdateDialog({super.key, this.service, this.manifest});
+  const UpdateDialog({
+    super.key,
+    this.service,
+    this.manifest,
+    this.manifestUri,
+    this.source,
+  });
 
   final UpdateService? service;
   final UpdateManifest? manifest;
+  final Uri? manifestUri;
+  final UpdateSource? source;
 
   @override
   State<UpdateDialog> createState() => _UpdateDialogState();
@@ -30,6 +42,7 @@ class _UpdateDialogState extends State<UpdateDialog> {
   _Phase _phase = _Phase.checking;
   UpdateManifest? _manifest;
   Uri? _manifestUri;
+  UpdateSource? _source;
   String _error = '';
   double _progress = 0;
   int _received = 0;
@@ -44,18 +57,26 @@ class _UpdateDialogState extends State<UpdateDialog> {
     final UpdateManifest? initial = widget.manifest;
     if (initial != null) {
       _manifest = initial;
-      _manifestUri = _safeManifestUri();
+      // 横幅路径：胜出 URI / source 由 UpdateNotifier 传入；没传（旧调用）时
+      // 才退回内置源首地址，保证老测试与老安装仍可用。
+      _manifestUri = widget.manifestUri ?? _safeManifestUri();
+      _source = widget.source;
       _phase = _Phase.available;
     } else {
       unawaited(_check());
     }
   }
 
-  /// 清单地址可能因为用户填错而抛异常；这里不把它当致命错误，
-  /// 真正请求时会再用同一套规则报一次，界面能显示具体原因。
+  /// 兜底清单地址：没有胜出 URI 时用内置主源的首地址。
+  /// `check()` 不再读 `UpdateStore.readBaseUrl()` 作为唯一来源——那正是
+  /// 「回退到 NAS 后仍去主源下载」的根因。这里只在真正缺失时用一次。
   Uri? _safeManifestUri() {
     try {
-      return _service.manifestUri(UpdateStore.readBaseUrl());
+      final List<UpdateSource> sources = _service.effectiveSources.ordered();
+      if (sources.isEmpty) {
+        return null;
+      }
+      return _service.manifestUri(sources.first.manifestBase);
     } on Object {
       return null;
     }
@@ -66,14 +87,16 @@ class _UpdateDialogState extends State<UpdateDialog> {
       _phase = _Phase.checking;
       _error = '';
     });
-    final UpdateCheck result = await _service.check(UpdateStore.readBaseUrl());
+    // 生产走内置有序源（GitHub 主源 + NAS 兜底），不传 base。
+    final UpdateCheck result = await _service.check();
     if (!mounted) {
       return;
     }
     if (result.status == UpdateCheckStatus.available) {
       setState(() {
         _manifest = result.manifest;
-        _manifestUri = _safeManifestUri();
+        _manifestUri = result.manifestUri ?? _safeManifestUri();
+        _source = result.source;
         _phase = _Phase.available;
       });
       return;
@@ -111,6 +134,7 @@ class _UpdateDialogState extends State<UpdateDialog> {
       final File file = await _service.download(
         manifest,
         manifestUri,
+        source: _source,
         onProgress: (int received, int total) {
           if (!mounted) {
             return;
@@ -142,8 +166,9 @@ class _UpdateDialogState extends State<UpdateDialog> {
       }
 
       // iOS 装不了未签名包，只能把用户送到下载页，让他自己重签。
-      final String url =
-          _service.downloadPage(manifest, manifestUri).toString();
+      final String url = _service
+          .downloadPage(manifest, manifestUri, source: _source)
+          .toString();
       final bool opened = await _service.openUrl(url);
       if (!mounted) {
         return;
