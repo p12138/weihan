@@ -3,7 +3,7 @@
 #
 # 用途：在缺少 android/ / ios/ 原生壳的 Flutter 工程上，幂等生成原生壳，
 #       并补齐「自用语音翻译」必需的权限声明。
-# 依赖：flutter 3.24.x（仅生成壳时需要）、python3（打补丁时需要）。
+# 依赖：flutter 3.50.x（仅生成壳时需要）、python3（打补丁时需要）。
 # 安全：不处理任何证书、keystore、Token；不配置 Xcode Signing。
 #
 # 用法：bash scripts/bootstrap.sh [工程根目录，默认当前目录]
@@ -16,7 +16,7 @@ cd "$ROOT"
 
 ORG="${FLUTTER_ORG:-com.selfuse.uyghur}"
 PROJECT="${FLUTTER_PROJECT_NAME:-uyghur_interpreter}"
-IOS_TARGET="${IOS_DEPLOY_TARGET:-12.0}"
+IOS_TARGET="${IOS_DEPLOY_TARGET:-15.0}"
 
 has_android=0
 has_ios=0

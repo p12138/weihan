@@ -5,14 +5,15 @@ allprojects {
     }
 }
 
-rootProject.buildDir = "../build"
+// Gradle 9 移除了 Project.buildDir，改用 layout.buildDirectory（对齐 3.50 模板）。
+// 仍把产物重定向到仓库根的 build/，Flutter 才能找到 build/app/outputs/flutter-apk/。
+def newBuildDir = rootProject.layout.buildDirectory.dir("../../build").get()
+rootProject.layout.buildDirectory.value(newBuildDir)
 subprojects {
-    project.buildDir = "${rootProject.buildDir}/${project.name}"
-}
-subprojects {
+    project.layout.buildDirectory.value(newBuildDir.dir(project.name))
     project.evaluationDependsOn(":app")
 }
 
 tasks.register("clean", Delete) {
-    delete rootProject.buildDir
+    delete rootProject.layout.buildDirectory
 }

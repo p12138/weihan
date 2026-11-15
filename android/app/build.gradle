@@ -1,6 +1,7 @@
 plugins {
     id "com.android.application"
-    id "kotlin-android"
+    // AGP 9 起显式应用 kotlin-android 会直接报错；Flutter 插件在
+    // android.builtInKotlin=false 时会自动补上 KGP（版本见 settings.gradle）。
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id "dev.flutter.flutter-gradle-plugin"
 }
@@ -17,17 +18,14 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_17.toString()
-    }
-
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.selfuse.uyghur.weihan"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        // record 5.2.0 的 Android 实现要求 API 23+；Flutter 3.24 默认 21 会在构建/运行时失败。
-        minSdk = 23
+        // record 5.2.0 的 Android 实现要求 API 23+；Flutter 3.50 模板基线
+        // flutter.minSdkVersion 为 24，同时满足插件要求，也避开 3.50 的 minSdk 警告。
+        minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -39,6 +37,14 @@ android {
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.debug
         }
+    }
+}
+
+// Kotlin 2.2 起 kotlinOptions{} 由警告升级为 error，必须用 compilerOptions；
+// 与 Flutter 3.50 模板一致，保证 Kotlin / Java 的 JVM target 同为 17。
+kotlin {
+    compilerOptions {
+        jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
     }
 }
 
