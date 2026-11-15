@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'conversation_page.dart';
 import 'device_audio.dart';
 import 'palette_controller.dart';
+import 'remote_config_notifier.dart';
 import 'splash_page.dart';
 import 'theme.dart';
 import 'update_notifier.dart';
@@ -22,6 +23,9 @@ void main() {
       // 静默检查更新：一天最多一次，失败不打扰（出门没网是常态）。
       // 放在启动页之后，不与首屏渲染和权限弹窗抢时间。
       unawaited(UpdateNotifier.instance.checkInBackground());
+      // 静默同步远程配置（热配置）：同一套日节流，失败回退缓存、不打扰。
+      // 断句/预译等参数在下次「开始同传」时读取，无需重启。
+      unawaited(RemoteConfigNotifier.instance.checkInBackground());
     },
   ));
 }

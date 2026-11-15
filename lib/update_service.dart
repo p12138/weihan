@@ -166,19 +166,8 @@ class UpdateService {
   /// 清单地址。传目录则补 `latest-<platform>.json`，传完整 `.json` 则原样使用，
   /// 便于临时指向某个测试清单。
   Uri manifestUri(String baseUrl) {
-    final String text = baseUrl.trim();
-    if (text.isEmpty) {
-      throw const UpdateException('还没有配置更新源地址');
-    }
-    final Uri base;
-    try {
-      base = Uri.parse(text);
-    } on FormatException {
-      throw UpdateException('更新源地址不是合法 URL：$text');
-    }
-    if (!base.hasScheme || base.host.isEmpty) {
-      throw UpdateException('更新源地址不完整（要带 http:// 或 https://）：$text');
-    }
+    final Uri base = parseUpdateBase(baseUrl);
+    // 行为与重构前完全一致：显式给了某个 .json 就原样用。
     if (base.path.endsWith('.json')) {
       return base;
     }
@@ -270,6 +259,28 @@ class UpdateService {
       path: '${manifestUri.path.substring(0, manifestUri.path.lastIndexOf('/') + 1)}${manifest.file}',
     );
   }
+}
+
+/// 校验并解析「更新源地址」基址，供整包清单与远程配置共用。
+///
+/// 空 / 非法 URL / 缺协议或 host 都给可读错误。抽出来是为了让
+/// `remote_config_service.dart` 的 `configUri` 与 `manifestUri` 用同一套
+/// 校验口径，而不是各写一份 `Uri.parse` + 错误文案。
+Uri parseUpdateBase(String baseUrl) {
+  final String text = baseUrl.trim();
+  if (text.isEmpty) {
+    throw const UpdateException('还没有配置更新源地址');
+  }
+  final Uri base;
+  try {
+    base = Uri.parse(text);
+  } on FormatException {
+    throw UpdateException('更新源地址不是合法 URL：$text');
+  }
+  if (!base.hasScheme || base.host.isEmpty) {
+    throw UpdateException('更新源地址不完整（要带 http:// 或 https://）：$text');
+  }
+  return base;
 }
 
 /// 把各种异常翻译成能看懂的一句话，保留原始信息，不吞细节。

@@ -67,6 +67,9 @@ bool looksLikeTarget(String text, Language target) {
 }
 
 class LiveInterpreter {
+  /// [segmenter] 可选注入：远程配置在会话起点用 `SegmenterParams.build()` 构造，
+  /// 不传则走编译期默认（`SpeechSegmenter(direction:)`）。既有调用与单测
+  /// 都不传此参数，行为零回归。
   LiveInterpreter({
     required this.direction,
     required this.translator,
@@ -79,7 +82,8 @@ class LiveInterpreter {
     this.forceRotateAfterMs = 54000,
     this.maxSessionFailures = 2,
     this.pretranslate = true,
-  }) : _segmenter = SpeechSegmenter(direction: direction);
+    SpeechSegmenter? segmenter,
+  }) : _segmenter = segmenter ?? SpeechSegmenter(direction: direction);
 
   final TranslationDirection direction;
   final Translator translator;

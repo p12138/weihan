@@ -1,11 +1,25 @@
 # NAS 更新分发（Lucky 反代）
 
-App 的「软件更新」只做一个 HTTP GET：`<更新源地址>/latest-android.json`
+同一个「更新源地址」目录下放两类文件，App 分别取用：
+
+| 文件 | 用途 | 触发方式 | 是否要重装 |
+|---|---|---|---|
+| `latest-android.json` / `latest-ios.json` + 安装包 | **整包更新**：比对版本、下载完整 APK/IPA | 「检查更新（整包 APK 重装）」 | 是 |
+| `remote-config.json` | **热配置**：断句/预译/开关/文案等行为参数 | 「立即同步配置」+ 冷启动静默同步 | 否，免重装 |
+
+> 热配置**只能改数据/参数，不能替换已编译进 APK 的 Dart 逻辑**（Flutter
+> release 是 AOT）。改断句时长、切预译开关、换提示文案、切翻译后端这类
+> 「下次同传就生效」的调整不用出包；要改函数体、widget 结构仍须整包更新。
+> 细节见仓库根目录 README 第 10 节。
+
+App 的整包更新只做一个 HTTP GET：`<更新源地址>/latest-android.json`
 （iOS 是 `latest-ios.json`），拿到清单后比对版本，再从同目录下载安装包。
+热配置则取同目录的 `remote-config.json`，两者共用同一套 `no-store` 缓存规则。
 
 这样设计的原因：
 
 - 域名、端口随时能换，不用重新出包（清单里只写文件名）；
+- 改参数不必发版、不必重装，配置放在 NAS 上随时改随时生效；
 - 走你自己的 NAS，不依赖 GitHub 的连通性；
 - 文件在你手里，草稿 Release 那套「登录才能下」的限制不影响更新。
 
@@ -19,6 +33,7 @@ deploy/nas/
 └── data/                # 实际分发的文件（建好后再放）
     ├── latest-android.json
     ├── latest-ios.json
+    ├── remote-config.json   # 热配置（可选，见第 7 节）
     ├── weihan-selfuse-arm64.apk
     └── weihan-selfuse-ios-unsigned.ipa
 ```
@@ -70,7 +85,10 @@ https://weihan.example.com
 
 留空则用构建期内置的地址（`--dart-define=UPDATE_BASE=...`）。
 
-点「检查更新」应立即返回「已是最新」或「发现新版本」。
+点「检查更新（整包 APK 重装）」应立即返回「已是最新」或「发现新版本」。
+点「立即同步配置（热配置·免重装）」会取同目录的 `remote-config.json`，
+成功后状态行显示配置版本；断句/预译等参数在**下次开始同传**时生效，
+无需重启、无需重装。冷启动也会一天静默同步一次（失败不打扰）。
 
 ## 5. 文件怎么来
 
@@ -118,3 +136,67 @@ python3 scripts/make_update_manifest.py \
 | 一直提示没有新版 | `curl https://域名/latest-android.json` 里的 `version` 是否大于 App 版本 |
 | 下载到一半失败 | 看 `nginx.conf` 是否带了 `Accept-Ranges`；NAS 磁盘是否满 |
 | 校验失败 | 清单里的 `sha256` 与文件不匹配，重新生成清单 |
+| 同步热配置一直「未启用」 | 是否把 `remote-config.json` 放到与 `latest-android.json` 同目录；更新源地址是否填对 |
+
+## 7. 热配置 `remote-config.json`
+
+放在与 `latest-android.json` **同一个目录**（App 用同一个更新源地址推导）。
+`nginx.conf` 已给它 `no-store`，改完刷新即时生效。下面是只含**安全项**的示例，
+改完把 `configVersion` 加一，App 下次同步就能看到新版本号：
+
+```json
+{
+  "schema": 1,
+  "configVersion": 3,
+  "publishedAt": "2026-11-15T10:00:00Z",
+
+  "segmentation": {
+    "silenceMs": 700,
+    "maxSentenceMs": 10000,
+    "maxZhChars": 60,
+    "maxUgChars": 200,
+    "minDraftZhChars": 6,
+    "minDraftUgChars": 10,
+    "draftGapMs": 1200,
+    "maxDraftsPerSentence": 1,
+    "speechThreshold": 0.12
+  },
+  "interpreter": {
+    "pretranslate": true,
+    "rotateAfterMs": 45000,
+    "forceRotateAfterMs": 54000,
+    "maxSessionFailures": 2
+  },
+  "features": {
+    "continuousMode": true
+  },
+  "prompts": {
+    "systemPrompt": "你是维汉同声传译，译文明快、口语化，别逐字死译"
+  },
+  "strings": {
+    "configSyncLabel": "立即同步配置（热配置·免重装）"
+  },
+  "glossary": {
+    "艾德莱斯": "ئەتلەس"
+  }
+}
+```
+
+字段全部**可选**：不写的项沿用 App 内置默认；数值超出合理范围会被钳到边界，
+不会让整份配置失效。`schema` 必须为 `1`，缺失或不匹配时 App 会回退上次缓存。
+
+**安全模型（默认零信任，个人自用 + 局域网场景的务实取舍）：**
+
+- 上表这些「行为类」字段（断句 / 预译 / 开关 / 文案 / glossary / prompt）
+  **默认即可生效**，改它们不需要在 App 里开任何开关；
+- `translation` / `asr` 里的服务商、endpoint、vcn 以及 `secrets` 属于**敏感项**，
+  默认**全部跳过**。要放行需在设置页打开「信任远程配置的服务商/端点/密钥覆盖」，
+  且 endpoint 的 host 必须等于更新源地址的 host（只能指向自己的 NAS 代理）；
+- `secrets` 最严格：即便打开信任开关也不下发（App 侧 `trustSecrets` 恒关），
+  **自带凭证的自用包永不被任何远程密钥覆盖**；密钥只在进程内存里生效，
+  绝不写入缓存、绝不回显、绝不落盘；
+- 网络失败时自动回退上次成功缓存；缓存也坏则全字段沿用内置默认，
+  出门没网、NAS 重启、JSON 写错都不会让 App 起不来。
+
+> 想要「改 Dart 逻辑也不出包」属于代码热更（Shorebird 之类），与本节的热配置
+> 是两回事：Flutter release AOT 不支持替换已编译代码，本工程当前只做热配置层。

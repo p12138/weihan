@@ -15,6 +15,18 @@
 
 import 'conversation.dart';
 
+/// 断句器默认参数。抽成常量，让 [SpeechSegmenter] 与 [SegmenterParams]
+/// （远程配置）共用同一份默认值，避免两处漂移。
+const double kDefaultSpeechThreshold = 0.12;
+const int kDefaultSilenceMs = 700;
+const int kDefaultMaxSentenceMs = 10000;
+const int kDefaultMaxZhChars = 60;
+const int kDefaultMaxUgChars = 200;
+const int kDefaultMinDraftZhChars = 6;
+const int kDefaultMinDraftUgChars = 10;
+const int kDefaultDraftGapMs = 1200;
+const int kDefaultMaxDraftsPerSentence = 1;
+
 /// 断句器事件类型。
 enum SegmentEventKind {
   /// 当前未提交句子的原文（可能为空）。
@@ -42,15 +54,15 @@ class SegmentEvent {
 class SpeechSegmenter {
   SpeechSegmenter({
     required this.direction,
-    this.speechThreshold = 0.12,
-    this.silenceMs = 700,
-    this.maxSentenceMs = 10000,
-    this.maxZhChars = 60,
-    this.maxUgChars = 200,
-    this.minDraftZhChars = 6,
-    this.minDraftUgChars = 10,
-    this.draftGapMs = 1200,
-    this.maxDraftsPerSentence = 1,
+    this.speechThreshold = kDefaultSpeechThreshold,
+    this.silenceMs = kDefaultSilenceMs,
+    this.maxSentenceMs = kDefaultMaxSentenceMs,
+    this.maxZhChars = kDefaultMaxZhChars,
+    this.maxUgChars = kDefaultMaxUgChars,
+    this.minDraftZhChars = kDefaultMinDraftZhChars,
+    this.minDraftUgChars = kDefaultMinDraftUgChars,
+    this.draftGapMs = kDefaultDraftGapMs,
+    this.maxDraftsPerSentence = kDefaultMaxDraftsPerSentence,
   });
 
   final TranslationDirection direction;
@@ -281,4 +293,62 @@ class SpeechSegmenter {
     }
     return segment;
   }
+}
+
+/// 断句参数快照：远程配置里的 9 个可空字段，`null` = 沿用编译期默认。
+///
+/// 放在本文件而非另起一份，是为了让 [build] 的默认值直接取上面那组常量，
+/// 与 [SpeechSegmenter] 同源，不会出现「配置默认 6、代码默认 7」的漂移。
+/// 数值在 `RemoteConfig.parse` 里已按边界钳制，这里只做 `??` 兜底。
+class SegmenterParams {
+  const SegmenterParams({
+    this.speechThreshold,
+    this.silenceMs,
+    this.maxSentenceMs,
+    this.maxZhChars,
+    this.maxUgChars,
+    this.minDraftZhChars,
+    this.minDraftUgChars,
+    this.draftGapMs,
+    this.maxDraftsPerSentence,
+  });
+
+  final double? speechThreshold;
+  final int? silenceMs;
+  final int? maxSentenceMs;
+  final int? maxZhChars;
+  final int? maxUgChars;
+  final int? minDraftZhChars;
+  final int? minDraftUgChars;
+  final int? draftGapMs;
+  final int? maxDraftsPerSentence;
+
+  /// 用「远程值 ?? 编译期默认」构造一个真正的断句器。
+  SpeechSegmenter build(TranslationDirection direction) => SpeechSegmenter(
+        direction: direction,
+        speechThreshold: speechThreshold ?? kDefaultSpeechThreshold,
+        silenceMs: silenceMs ?? kDefaultSilenceMs,
+        maxSentenceMs: maxSentenceMs ?? kDefaultMaxSentenceMs,
+        maxZhChars: maxZhChars ?? kDefaultMaxZhChars,
+        maxUgChars: maxUgChars ?? kDefaultMaxUgChars,
+        minDraftZhChars: minDraftZhChars ?? kDefaultMinDraftZhChars,
+        minDraftUgChars: minDraftUgChars ?? kDefaultMinDraftUgChars,
+        draftGapMs: draftGapMs ?? kDefaultDraftGapMs,
+        maxDraftsPerSentence:
+            maxDraftsPerSentence ?? kDefaultMaxDraftsPerSentence,
+      );
+
+  /// 缓存用：只序列化非 null 字段，null 不写（下次读回仍是「沿用」）。
+  Map<String, Object?> toJson() => <String, Object?>{
+        if (speechThreshold != null) 'speechThreshold': speechThreshold,
+        if (silenceMs != null) 'silenceMs': silenceMs,
+        if (maxSentenceMs != null) 'maxSentenceMs': maxSentenceMs,
+        if (maxZhChars != null) 'maxZhChars': maxZhChars,
+        if (maxUgChars != null) 'maxUgChars': maxUgChars,
+        if (minDraftZhChars != null) 'minDraftZhChars': minDraftZhChars,
+        if (minDraftUgChars != null) 'minDraftUgChars': minDraftUgChars,
+        if (draftGapMs != null) 'draftGapMs': draftGapMs,
+        if (maxDraftsPerSentence != null)
+          'maxDraftsPerSentence': maxDraftsPerSentence,
+      };
 }

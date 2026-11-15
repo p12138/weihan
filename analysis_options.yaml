@@ -3,6 +3,13 @@ analyzer:
     - build/**
     - android/**
     - ios/**
+  errors:
+    # Flutter 3.50 把 `package:flutter/material.dart` 整体标记为 deprecated
+    # （迁移目标 material_ui 尚未 API 对齐），并把 Matrix4.translate 改名。
+    # 这两类是框架过渡期的库级弃用，`flutter analyze` 默认 --fatal-infos 会
+    # 因此判红；本工程为自用、锁定单一 Flutter 版本，先统一降级为忽略，
+    # 避免为一次库改名改动 20+ 个 import。真正的 error/warning 仍照常报。
+    deprecated_member_use: ignore
 include: package:flutter_lints/flutter.yaml
 linter:
   rules:

@@ -13,6 +13,10 @@ import 'glass.dart';
 import 'interpreter.dart';
 import 'live_asr.dart';
 import 'palette_controller.dart';
+import 'remote_config_notifier.dart';
+import 'remote_config_service.dart';
+import 'remote_config_state.dart';
+import 'remote_config_store.dart';
 import 'speech_config.dart';
 import 'speech_pipeline.dart';
 import 'theme.dart';
@@ -84,7 +88,10 @@ class _ConversationPageState extends State<ConversationPage>
   bool _continuousMode = false;
   bool _continuousActive = false;
   bool _continuousStopping = false;
-  bool _pretranslate = true;
+
+  /// 「预译」不再单独存一份：统一读 [remoteConfigState]，避免手动开关与
+  /// 远程配置两个真相源打架。手动切换时写回 state 的 override。
+  bool get _pretranslate => remoteConfigState.pretranslate;
   String _continuousStatus = '';
   LiveInterpreter? _interpreter;
   StreamSubscription<Uint8List>? _continuousChunks;
@@ -557,7 +564,9 @@ class _ConversationPageState extends State<ConversationPage>
     if (_continuousActive || _continuousStopping) {
       return;
     }
-    setState(() => _pretranslate = enabled);
+    setState(() {
+      remoteConfigState.setPretranslate(enabled);
+    });
   }
 
   Future<void> _toggleContinuous() async {
@@ -591,6 +600,9 @@ class _ConversationPageState extends State<ConversationPage>
     final TranslationDirection direction = _voiceDirection!;
     _draftBubbles.clear();
     final LiveSpeechPort live = speech as LiveSpeechPort;
+    // 断句 / 预译 / 会话轮换参数在「开始同传」这一刻从 state 取最新值：
+    // 远程配置改动无需重启、无需重装，下次开始同传自然用上新参数。
+    final RemoteConfigState config = remoteConfigState;
     final LiveInterpreter interpreter = LiveInterpreter(
       direction: direction,
       translator: widget.translator,
@@ -599,7 +611,11 @@ class _ConversationPageState extends State<ConversationPage>
       onSentence: _onInterpreterSentence,
       onStatus: _onInterpreterStatus,
       onClosed: _onInterpreterClosed,
-      pretranslate: _pretranslate,
+      pretranslate: config.pretranslate,
+      segmenter: config.segmenter.build(direction),
+      rotateAfterMs: config.rotateAfterMs,
+      forceRotateAfterMs: config.forceRotateAfterMs,
+      maxSessionFailures: config.maxSessionFailures,
     );
     if (!interpreter.start()) {
       _starting = false;
@@ -2525,9 +2541,18 @@ class _SettingsDialogState extends State<_SettingsDialog> {
   late final TextEditingController _updateBaseController;
   late TranslationProvider _provider;
 
+  /// 「立即同步配置」的结果提示（一行状态）。
+  String _configStatus = '';
+  bool _syncingConfig = false;
+
+  /// 是否信任远程配置里的服务商/端点/密钥覆盖（Tier B）。默认关。
+  bool _trustSensitive = false;
+
   @override
   void initState() {
     super.initState();
+    _trustSensitive = RemoteConfigStore().readTrustSensitive();
+    RemoteConfigNotifier.instance.addListener(_onConfigChanged);
     // 主题是全局色板，切完不会自动重建这个对话框，手动订阅一次。
     PaletteController.instance.addListener(_onPaletteChanged);
     _provider = translationConfig.provider;
@@ -2561,9 +2586,82 @@ class _SettingsDialogState extends State<_SettingsDialog> {
     }
   }
 
+  void _onConfigChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  /// 设置页「立即同步配置」：把输入框里的地址落盘，再手动同步一次。
+  /// 与整包「检查更新」分开，结果只显示成一行状态，不弹对话框、不装包。
+  Future<void> _syncConfig() async {
+    if (_syncingConfig) {
+      return;
+    }
+    UpdateStore.writeBaseUrl(_updateBaseController.text);
+    setState(() {
+      _syncingConfig = true;
+      _configStatus = '正在同步…';
+    });
+    final RemoteConfigFetch result =
+        await RemoteConfigNotifier.instance.sync();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _syncingConfig = false;
+      _configStatus = _describeSync(result);
+    });
+  }
+
+  String _describeSync(RemoteConfigFetch result) {
+    if (result.isFresh) {
+      return '已同步到 v${result.config.configVersion} · 断句/预译下次同传生效';
+    }
+    if (result.source == RemoteConfigSource.cache) {
+      return '网络不可用，沿用上次缓存 v${result.config.configVersion}';
+    }
+    return result.error ?? '暂未启用（先填更新源地址并放好 remote-config.json）';
+  }
+
+  /// AnimatedBuilder 的内容：配置版本 / 上次同步时间 / 本次结果，合成一行。
+  Widget _buildConfigStatusLine() {
+    final RemoteConfigNotifier notifier = RemoteConfigNotifier.instance;
+    final String version = notifier.configVersion > 0
+        ? 'v${notifier.configVersion}'
+        : '未启用';
+    final DateTime? last = notifier.lastSync;
+    final String when = last == null
+        ? '尚未同步'
+        : '上次同步 ${last.month}-${last.day} '
+            '${last.hour.toString().padLeft(2, '0')}:'
+            '${last.minute.toString().padLeft(2, '0')}';
+    final String status = _configStatus.isNotEmpty
+        ? _configStatus
+        : (notifier.error.isNotEmpty ? notifier.error : '断句/预译下次同传生效');
+    return Container(
+      key: const ValueKey<String>('config-status-line'),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.primarySoft,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        '配置 $version · $when\n$status',
+        style: TextStyle(
+          fontSize: 11,
+          height: 1.5,
+          color: AppColors.primaryDeep,
+        ),
+      ),
+    );
+  }
+
   @override
   void dispose() {
     PaletteController.instance.removeListener(_onPaletteChanged);
+    RemoteConfigNotifier.instance.removeListener(_onConfigChanged);
     _appIdController.dispose();
     _keyController.dispose();
     _regionController.dispose();
@@ -2821,10 +2919,12 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                       ),
                     ),
                     const SizedBox(height: 22),
-                    const _SectionTitle(
+                    _SectionTitle(
                       icon: Icons.system_update_alt,
-                      label: '软件更新',
-                      note: '从自己的 NAS 拉新版本',
+                      label: '软件更新 / 热配置',
+                      note: remoteConfigState.text(
+                          'updateSectionNote',
+                          '整包要重装；热配置免重装'),
                     ),
                     const SizedBox(height: 12),
                     TextField(
@@ -2833,21 +2933,70 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                       style: const TextStyle(fontSize: 14.5),
                       keyboardType: TextInputType.url,
                       decoration: const InputDecoration(
-                        labelText: '更新源地址（留空用内置）',
+                        labelText: '更新源地址（整包与配置共用，留空用内置）',
                         hintText: 'https://weihan.example.com/weihan',
                       ),
                     ),
                     const SizedBox(height: 10),
-                    Align(
-                      alignment: Alignment.centerLeft,
-                      child: OutlinedButton.icon(
-                        key: const ValueKey<String>('update-check-button'),
-                        onPressed: _openUpdateDialog,
-                        icon: const Icon(Icons.refresh, size: 18),
-                        label: const Text('检查更新'),
+                    // 两个入口刻意分开：一个装新 APK，一个只同步 JSON 配置。
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 8,
+                      children: <Widget>[
+                        OutlinedButton.icon(
+                          key: const ValueKey<String>('update-check-button'),
+                          onPressed: _openUpdateDialog,
+                          icon: const Icon(Icons.refresh, size: 18),
+                          label: const Text('检查更新（整包 APK 重装）'),
+                        ),
+                        OutlinedButton.icon(
+                          key: const ValueKey<String>('config-sync-button'),
+                          onPressed: _syncingConfig ? null : _syncConfig,
+                          icon: const Icon(Icons.cloud_sync_outlined, size: 18),
+                          label: Text(remoteConfigState.text(
+                              'configSyncLabel', '立即同步配置（热配置·免重装）')),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    // 版本 / 上次同步 / 本次结果，跟随 notifier 实时刷新。
+                    AnimatedBuilder(
+                      animation: RemoteConfigNotifier.instance,
+                      builder: (BuildContext context, Widget? child) {
+                        return _buildConfigStatusLine();
+                      },
+                    ),
+                    const SizedBox(height: 6),
+                    // 外面套一层透明 Material：设置页玻璃卡片是带底色的
+                    // DecoratedBox，Flutter 3.50 会断言「ListTile 的点击水波纹
+                    // 被 DecoratedBox 盖住」。给 ListTile 一个自己的 Material
+                    // 祖先即可消除该断言，且透明材质不改变玻璃卡片外观。
+                    Material(
+                      type: MaterialType.transparency,
+                      child: SwitchListTile(
+                        key: const ValueKey<String>('config-trust-switch'),
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                        value: _trustSensitive,
+                        title: Text(
+                          remoteConfigState.text('configTrustLabel',
+                              '信任远程配置的服务商/端点/密钥覆盖'),
+                          style: const TextStyle(fontSize: 12.5),
+                        ),
+                        subtitle: Text(
+                          _trustSensitive
+                              ? '已信任：服务商/endpoint 可覆盖（内置凭证仍不被覆盖）'
+                              : '默认关闭：仅同步断句/预译/开关等安全项',
+                          style: TextStyle(
+                              fontSize: 10.5, color: AppColors.inkMuted),
+                        ),
+                        onChanged: (bool value) {
+                          RemoteConfigStore().writeTrustSensitive(value);
+                          setState(() => _trustSensitive = value);
+                        },
                       ),
                     ),
-                    const SizedBox(height: 22),
+                    const SizedBox(height: 14),
                     Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
