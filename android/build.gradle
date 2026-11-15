@@ -5,6 +5,33 @@ allprojects {
     }
 }
 
+// Flutter 3.50 / AGP 9 下，老插件在自身 build.gradle 里把 compileSdk 写死：
+//   audioplayers_android 5.0.0 -> 33，record_android 1.3.0 -> 34
+// 而传递依赖的 AndroidX（androidx.window / fragment / activity / core 1.13+ 等）
+// AAR 元数据要求 compileSdk >= 34，AGP 9 的 checkAarMetadata 会直接判失败：
+//   ":audioplayers_android is currently compiled against android-33"（共 15 条）。
+// 统一把所有 library 子项目的 compileSdk 抬到与主工程一致的 36
+//（= Flutter 3.50 的 flutter.compileSdkVersion）。compileSdk 只决定编译期可见的
+// API 面，不改 minSdk / targetSdk，不影响可安装设备范围。
+//
+// 注册时机很关键：下面 subprojects{} 里的 evaluationDependsOn(":app") 会提前
+// 评估 :app，直接在 subprojects{} 里注册 afterEvaluate 会撞上
+// "Cannot run Project.afterEvaluate(Closure) when the project is already evaluated"。
+// gradle.beforeProject 在任一项目评估前触发，保证注册合法；afterEvaluate 则在插件
+// 自身 android{}（写死 33）执行完之后再覆盖成 36。
+gradle.beforeProject { p ->
+    if (p != rootProject) {
+        p.afterEvaluate {
+            def androidExt = p.extensions.findByName("android")
+            if (androidExt != null && p.plugins.hasPlugin("com.android.library")) {
+                // LibraryExtension.compileSdk 是 AGP 9 的可写属性（Flutter 3.50 内部
+                // AgpCommonExtensionWrapper 也是这么写的），直接对齐主工程。
+                androidExt.compileSdk = 36
+            }
+        }
+    }
+}
+
 // Gradle 9 移除了 Project.buildDir，改用 layout.buildDirectory（对齐 3.50 模板）。
 // 仍把产物重定向到仓库根的 build/，Flutter 才能找到 build/app/outputs/flutter-apk/。
 def newBuildDir = rootProject.layout.buildDirectory.dir("../../build").get()
@@ -12,24 +39,6 @@ rootProject.layout.buildDirectory.value(newBuildDir)
 subprojects {
     project.layout.buildDirectory.value(newBuildDir.dir(project.name))
     project.evaluationDependsOn(":app")
-
-    // Flutter 3.50 / AGP 9 下，老插件在自身 build.gradle 里把 compileSdk 写死：
-    //   audioplayers_android 5.0.0 -> 33，record_android 1.3.0 -> 34
-    // 而传递依赖的 AndroidX（androidx.window / fragment / activity / core 1.13+ 等）
-    // AAR 元数据要求 compileSdk >= 34，AGP 9 的 checkAarMetadata 会直接判失败：
-    //   ":audioplayers_android is currently compiled against android-33"（共 15 条）。
-    // 统一把所有 library 子项目的 compileSdk 抬到与主工程一致的 36
-    //（= Flutter 3.50 的 flutter.compileSdkVersion）。compileSdk 只决定编译期可见的
-    // API 面，不改 minSdk / targetSdk，不影响可安装设备范围。
-    // 必须放在 afterEvaluate：插件自身的 android {} 先执行，之后才能覆盖。
-    afterEvaluate {
-        def androidExt = project.extensions.findByName("android")
-        if (androidExt != null && project.plugins.hasPlugin("com.android.library")) {
-            // LibraryExtension.compileSdk 是 AGP 9 的可写属性（Flutter 3.50 内部
-            // AgpCommonExtensionWrapper 也是这么写的），直接对齐主工程。
-            androidExt.compileSdk = 36
-        }
-    }
 }
 
 tasks.register("clean", Delete) {
