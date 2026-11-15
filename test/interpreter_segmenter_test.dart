@@ -77,11 +77,13 @@ void main() {
   test('维语预译切在最后一个空格，不翻半个单词', () {
     final SpeechSegmenter segmenter =
         SpeechSegmenter(direction: TranslationDirection.ugToZh);
+    // 维语没有小句标点时，文本要够长（minDraftUgChars * 2）才允许预译；
+    // 末尾故意停在半个词 كۆ 上，验证稳定前缀把它切掉。
     final List<SegmentEvent> events =
-        segmenter.onText('ياخشىمۇسىز دوست');
+        segmenter.onText('ياخشىمۇسىز دوستلار كۆ');
     expect(
       _of(events, SegmentEventKind.draftRequest),
-      <String>['ياخشىمۇسىز'],
+      <String>['ياخشىمۇسىز دوستلار'],
     );
   });
 
