@@ -1,0 +1,245 @@
+name: shorebird-codepush
+
+# L2 真代码热更新（可选第三通道）——用 Shorebird 下发「Dart AOT 差分补丁」。
+#
+# 边界（务必先读 README §10）：
+#   * 这是 ADDITIVE 第三条通道，只承载 Dart 代码补丁。L1 热配置
+#     （remote_config*.dart / remote-config.json）与整包更新
+#     （latest-android.json / NAS APK）完全独立、本工作流一律不碰。
+#   * 补丁不能改原生壳 / 插件 / 资源 / 引擎 / 权限 / --dart-define / version。
+#   * 基线必须是 shorebird release 产物；flutter build apk 出的包不可补丁。
+#
+# 为什么只在 workflow_dispatch 且带闸门：
+#   * 绝不挂 push —— 控制面 publish_control_plane.py 的 [skip ci] 提交、
+#     deploy/** 的任何改动都永远不会递归触发本工作流。
+#   * 默认关闭：需仓库 Variable SHOREBIRD_ENABLED == '1' 才放行；
+#     github-actions[bot] 一律跳过。
+#   * 版本闸门：release 前用 `shorebird flutter versions list` 实测确认
+#     Shorebird 已发布 Flutter 3.50.x fork（本工程是 3.50.0；Shorebird
+#     默认只给 3.47.9，若不显式 --flutter-version 会用错版本导致原生壳不匹配）。
+#
+# 与 selfuse-bundled.yml 的隔离：用独立草稿 Release tag（selfuse-shorebird-latest
+# / shorebird-v<version>-build<run>），绝不复用 selfuse-latest / v<version>-build<run>，
+# 避免其每轮 delete+recreate 把本通道的产物冲掉。
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "release = 新建可补丁基线；patch = 对现有 release 发 Dart 补丁"
+        required: true
+        default: "release"
+        type: choice
+        options:
+          - release
+          - patch
+      track:
+        description: "目标 track（release 默认 stable；patch 可先 staging 验证再在控制台 promote）"
+        required: true
+        default: "stable"
+        type: string
+      release_version:
+        description: "patch 模式要打补丁的 release 版本（如 0.5.0+1）；留空 = latest；release 模式忽略"
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: shorebird-codepush-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  codepush:
+    name: Shorebird release / patch（第三通道）
+    # 双重闸门：显式开关 + 排除 bot（控制面 [skip ci] 提交永不触发）。
+    if: ${{ vars.SHOREBIRD_ENABLED == '1' && github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # patch 模式用的输入（release 模式忽略）。mode 用 inputs.mode 直接在步骤 if 判断。
+      TRACK: ${{ inputs.track }}
+      RELEASE_VERSION: ${{ inputs.release_version }}
+      # 鉴权：Shorebird Console 的服务账号/个人 API key，CLI 自动从该变量读取。
+      SHOREBIRD_TOKEN: ${{ secrets.SHOREBIRD_TOKEN }}
+      # 自带凭证（与 selfuse-bundled.yml 一致），复用 write_bundle_defines.py 注入。
+      # 这些是编译期定义，补丁无法覆盖 —— 所以 release 与 patch 必须用同一份 defines。
+      NIUTRANS_APP_ID: ${{ secrets.NIUTRANS_APP_ID }}
+      NIUTRANS_API_KEY: ${{ secrets.NIUTRANS_API_KEY }}
+      NIUTRANS_UG_CODE: ${{ vars.NIUTRANS_UG_CODE }}
+      XFYUN_APP_ID: ${{ secrets.XFYUN_APP_ID }}
+      XFYUN_API_KEY: ${{ secrets.XFYUN_API_KEY }}
+      XFYUN_API_SECRET: ${{ secrets.XFYUN_API_SECRET }}
+      XFYUN_UG_VCN: ${{ secrets.XFYUN_UG_VCN }}
+      XFYUN_ZH_VCN: ${{ vars.XFYUN_ZH_VCN }}
+      UPDATE_GITHUB_BASE: https://raw.githubusercontent.com/${{ github.repository }}/main/deploy/update
+      UPDATE_NAS_BASE: ${{ vars.UPDATE_NAS_BASE }}
+      UPDATE_GITHUB_PAYLOAD_BASE: ${{ vars.UPDATE_GITHUB_PAYLOAD_BASE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # shorebird.yaml 由 Phase 1 的 `shorebird init` 落真实 app_id；占位符未替换前
+      # 绝不放行（否则 release 会以无效 app_id 报一个很难懂的云错误）。
+      - name: 闸门：shorebird.yaml 与鉴权是否就绪
+        run: |
+          set -euo pipefail
+          if [ -z "${SHOREBIRD_TOKEN:-}" ]; then
+            echo "::error::缺少 Secret SHOREBIRD_TOKEN（Shorebird Console → API keys）"
+            exit 1
+          fi
+          if [ ! -f shorebird.yaml ]; then
+            echo "::error::缺少 shorebird.yaml，请先本地执行 shorebird init 并提交（见 README §10.4）"
+            exit 1
+          fi
+          if grep -q 'REPLACE_WITH_APP_ID' shorebird.yaml; then
+            echo "::error::shorebird.yaml 的 app_id 仍是占位符，请执行 shorebird init 生成真实 app_id"
+            exit 1
+          fi
+          echo "::notice::shorebird.yaml 与 SHOREBIRD_TOKEN 就绪"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # 官方 action：安装 Shorebird CLI 及其私有 Flutter fork（不要再加
+      # subosito/flutter-action —— shorebird release/patch 会用自带 fork 构建）。
+      - name: Setup Shorebird
+        uses: shorebirdtech/setup-shorebird@v1
+        with:
+          cache: true
+
+      - name: shorebird --version
+        run: shorebird --version
+
+      # G2 等待点的实测：确认 3.50.x fork 已发布，并抽出确切版本号供 release 固定。
+      # 不固定版本号的话 Shorebird 默认用 3.47.9，与本工程 3.50 原生壳（AGP 9.3.1
+      # / Gradle 9.5.0 / compileSdk 36）不匹配，构建会失败。
+      - name: 闸门：确认 Shorebird 已发布 Flutter 3.50.x fork
+        if: ${{ inputs.mode == 'release' }}
+        run: |
+          set -euo pipefail
+          out="$(shorebird flutter versions list 2>&1)" || {
+            echo "$out"
+            echo "::error::shorebird flutter versions list 执行失败"
+            exit 1
+          }
+          echo "$out"
+          sb_flutter="$(printf '%s\n' "$out" | grep -oE '3\.50\.[0-9]+' | head -n1 || true)"
+          if [ -z "$sb_flutter" ]; then
+            echo "::error::Shorebird 尚未发布 Flutter 3.50.x fork（当前最高 3.47.9）。"
+            echo "::error::按官方『季度版本 5 个工作日内跟进』，3.50 于 2026-11-11 发布，约 11-18 可用。"
+            echo "::error::本闸门不放行 —— 不降级、不用 3.47.9 硬出包。请稍后重跑本工作流。"
+            exit 1
+          fi
+          echo "SB_FLUTTER=$sb_flutter" >> "$GITHUB_ENV"
+          echo "::notice::使用 Shorebird Flutter $sb_flutter 构建基线"
+
+      # 与整包线完全相同的编译期凭证注入（含 BUNDLED_SELFUSE=true + 三个内置源 URL）。
+      # 只输出键名、不打印值；文件 0600、用完即删。
+      - name: 生成编译期配置（只输出键名）
+        run: python3 scripts/write_bundle_defines.py /tmp/weihan_bundle_defines.json
+
+      # 原生壳已入库（android/ ios/ 已对齐 3.50），刻意不跑 bootstrap.sh：
+      # 无需 flutter create，也避免 Shorebird fork 重写已调好的 gradle/Podfile。
+      # `shorebird release` 会自带 fork 隐式执行 pub get。
+      - name: Shorebird release（新建可补丁基线，输出 APK）
+        if: ${{ inputs.mode == 'release' }}
+        run: |
+          set -euo pipefail
+          echo "::group::shorebird release android"
+          # --artifact apk / --target-platform 是 Shorebird 自身 flag，必须放在 `--` 前；
+          # `--dart-define-from-file` 经 `--` 原样转发给 flutter build（官方 action 文档
+          # 亦用 `args: '-- --dart-define=KEY=VALUE'`，转发后的 define 仍参与 1.6.138+
+          # 的 release/patch 一致性校验）。若某版 CLI 直接接受该 flag，也可去掉 `--`。
+          shorebird release android \
+            --flutter-version="$SB_FLUTTER" \
+            --artifact apk \
+            --target-platform android-arm64 \
+            -- --dart-define-from-file=/tmp/weihan_bundle_defines.json \
+            2>&1 | tee /tmp/shorebird_release.log
+          echo "::endgroup::"
+
+      - name: 定位基线 APK
+        if: ${{ inputs.mode == 'release' }}
+        run: |
+          set -euo pipefail
+          apk="$(find build -type f -name '*.apk' ! -name '*debug*' | head -n1 || true)"
+          if [ -z "$apk" ] || [ ! -f "$apk" ]; then
+            echo "::error::没有找到 shorebird release 产出的 APK"
+            find build -type f -name '*.apk' -print || true
+            exit 1
+          fi
+          echo "::notice::基线 APK：$apk"
+          echo "SHOREBIRD_APK=$apk" >> "$GITHUB_ENV"
+
+      # 独立草稿 Release，tag 与 selfuse-bundled.yml 完全错开，避免互相覆盖。
+      # public 仓库含凭证包只发草稿；仅登录且有写权限者可见可下载。
+      - name: 发布基线到独立草稿 Release
+        if: ${{ inputs.mode == 'release' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ROLLING_TAG: selfuse-shorebird-latest
+        run: |
+          set -euo pipefail
+          version="$(python3 -c "import re; m=re.search(r'^version:\s*([0-9.]+)', open('pubspec.yaml',encoding='utf-8').read(), re.M); print(m.group(1) if m else '0.0.0')")"
+          tag="shorebird-v${version}-build${GITHUB_RUN_NUMBER}"
+          commit="${GITHUB_SHA:0:7}"
+
+          cp "$SHOREBIRD_APK" weihan-selfuse-arm64-shorebird.apk
+          sha="$(sha256sum weihan-selfuse-arm64-shorebird.apk | cut -d' ' -f1)"
+          size="$(du -h weihan-selfuse-arm64-shorebird.apk | cut -f1)"
+
+          note="Shorebird 可补丁基线（L2 第三通道），自带凭证、装到手机即可用。
+          版本 ${version} · 构建 #${GITHUB_RUN_NUMBER} · commit ${commit} · Flutter ${SB_FLUTTER}
+
+          【这是基线】只有装了这个包（而非 flutter build apk 的普通包），后续
+          shorebird patch 下发的 Dart 补丁才会生效；首次启动后台检查、下次启动应用。
+
+          【与整包更新隔离】本包发在独立草稿 Release（${tag} / ${ROLLING_TAG}），
+          不写 latest-android.json、不推 NAS；G3 扶正前 NAS 的整包载荷仍是普通 APK。
+
+          arm64 包（${size}）SHA-256 ${sha}
+          ⚠️ 含编译期凭证，反编译可提取，自用勿分发；草稿包请登录 GitHub 后下载。"
+
+          has_release() {
+            gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              | python3 -c "import json,sys; print('\n'.join(r['tag_name'] for r in json.load(sys.stdin)))" \
+              | grep -qx "$1"
+          }
+
+          # 滚动 tag 每轮以草稿重建（草稿无法用 PATCH 改回，先删后建）。
+          if has_release "$ROLLING_TAG"; then
+            gh release delete "$ROLLING_TAG" --yes \
+              || echo "::warning::删除旧 ${ROLLING_TAG} 失败，下面创建可能报 already exists"
+          fi
+          gh release create "$ROLLING_TAG" --title "Shorebird 基线（最新）" \
+            --notes "$note" --draft weihan-selfuse-arm64-shorebird.apk
+          gh release create "$tag" --title "融合 ${version} Shorebird 基线（构建 ${GITHUB_RUN_NUMBER}）" \
+            --notes "$note" --draft weihan-selfuse-arm64-shorebird.apk
+
+          echo "::notice::已发为草稿 Release（${ROLLING_TAG} / ${tag}）。"
+          echo "::notice::后续发补丁：Actions → 本工作流 → mode=patch"
+
+      # 稳态发补丁：patch 用 release 的确切 Flutter 版本构建（CLI 自动查），
+      # 故不传 --flutter-version；必须重复同一份 defines 以通过一致性校验。
+      - name: Shorebird patch（下发 Dart 补丁）
+        if: ${{ inputs.mode == 'patch' }}
+        run: |
+          set -euo pipefail
+          rel="${RELEASE_VERSION:-latest}"
+          echo "::notice::对 release ${rel} / track ${TRACK} 发补丁"
+          shorebird patch android \
+            --release-version="$rel" \
+            --track="$TRACK" \
+            -- --dart-define-from-file=/tmp/weihan_bundle_defines.json \
+            2>&1 | tee /tmp/shorebird_patch.log
+          echo "::notice::补丁已发布。设备下次启动检查、再下次启动应用；控制台可 promote / 回滚。"
+
+      - name: 清理临时凭证文件
+        if: always()
+        run: rm -f /tmp/weihan_bundle_defines.json weihan-selfuse-arm64-shorebird.apk

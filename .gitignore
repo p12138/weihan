@@ -22,6 +22,16 @@ dist/
 *bundle*defines*.json
 _*.bundle.json
 
+# ---------- Shorebird（L2 真代码热更新，可选第三通道） ----------
+# CLI 私有缓存 / 本地安装，绝不入库
+.shorebird/
+# 本地覆盖配置（绝不入库）；真实 shorebird.yaml 由 shorebird init 生成、应入库
+shorebird.yaml.local
+# shorebird release/patch 的构建产物落在 build/（已在上面忽略）；
+# 独立草稿 Release 用的临时改名 APK 也只在 runner 出现，防手滑提交
+weihan-selfuse-arm64-shorebird.apk
+# 注意：shorebird.yaml 与 shorebird.yaml.example 都要入库，不要忽略
+
 # ---------- 来自仓库初始化的通用规则 ----------
 .DS_Store
 Thumbs.db

@@ -859,16 +859,21 @@ Flutter 的 **release 是 AOT**：Dart 代码在出包时已编译成机器码�
 | 层 | 能改什么 | 是否免重装 | 数据来源 | 现状 |
 |---|---|---|---|---|
 | **L1 热配置 / 远程配置** | 断句、预译、会话轮换、开关、文案、术语表、翻译后端选择等**数据/参数** | 是 | 内置 GitHub 主源 + NAS 兜底的 `remote-config.json` | **已实现** |
-| **L2 代码推送** | 已编译的 **Dart 逻辑差分** | 是 | Shorebird 云 | 未启用（闸门后可选） |
+| **L2 代码推送（Shorebird）** | 已编译的 **Dart 逻辑差分** | 是 | Shorebird 云 CDN（不可自托管） | **脚手架已就位，闸门后接入** |
 
 > 「检查更新」按钮走的是**整包更新**：下载完整 APK 并调系统安装器重装，
-> 它不是热更新。本节说的热配置是「改 JSON，下次同传就生效，不用装包」。
+> 它不是热更新。本节说的 L1 热配置是「改 JSON，下次同传就生效，不用装包」；
+> L2 是「改 Dart 代码，补丁后台下载、下次启动生效，也不装包」。
 
-**L2 为什么先不做**：Shorebird 是目前唯一成熟的生产级 Flutter 代码推送，但它依赖
-Shorebird 云（不能自托管）、基线要用其 Flutter fork 重新出包、patch 不能改原生
-插件/资源/引擎版本，且对本工程当前的 Flutter 版本支持尚未确认；iOS 侧还有签名与
-商店策略边界。个人侧载自用技术上可行，但引入云依赖 + 版本回退代价大，
-因此先把能自托管、零外部依赖、零风险的 **L1 热配置**做扎实，L2 作为日后闸门决策。
+**L2 定位：增量第三通道，不是替代**。L1 热配置、整包更新（GitHub 主源 + NAS 兜底
+的控制面/载荷）全部保持不动；Shorebird 云只承载 **Dart 代码补丁**。三条通道互不
+污染：补丁不改 `version`，所以永远不会误触发整包更新的 `isNewerThan`。这样既保留
+了已交付的自托管架构，也不为「想改编译逻辑」引入对云的**唯一**依赖。
+
+Phase 0（脚手架）已落地且默认不生效：`.github/workflows/shorebird-release.yml` 仅在
+`workflow_dispatch` 触发、且需仓库 Variable `SHOREBIRD_ENABLED == '1'` 才放行；
+`shorebird.yaml.example` 是模板。真正发第一个可补丁基线（Phase 1）要过三道闸门，
+见 §10.4。接入前请务必先读该节的云依赖与版本约束。
 
 ### 10.2 热配置怎么用
 
@@ -899,3 +904,49 @@ Shorebird 云（不能自托管）、基线要用其 Flutter fork 重新出包�
 
 相关代码：`lib/remote_config*.dart`（模型 / 取数 / 落盘 / 生效 / 通知）、
 `lib/interpreter_segmenter.dart` 的 `SegmenterParams`、设置页「软件更新 / 热配置」区。
+
+### 10.4 L2 三道闸门、接入步骤与发布决策
+
+Shorebird 是目前唯一成熟的生产级 Flutter 代码推送，但有两条硬约束，决定了 L2
+**不能今天直接出一个可补丁包**，只能「脚手架就位、按闸门放行」：
+
+| 闸门 | 内容 | 决策 |
+|---|---|---|
+| **G1 云依赖** | Shorebird 明确「no on-prem / self-host / cloud-prem」，补丁走其云 CDN。仅上传编译产物（不含源码、不含用户数据），补丁默认签名 `strict`，免费 5,000 次补丁安装/月。**不能自托管**。 | 批准本方案 = 接受把它作为**第三条、仅 Dart 补丁**的通道。若不接受 → **停止 L2**，只保留 L1 热配置（自研代码推送引擎不可行） |
+| **G2 版本墙** | Shorebird 最高支持 Flutter **3.47.9 / Dart 3.13.7**；本工程是 **3.50.0 / 3.14.0**（3.50 于 2026-11-11 发布）。`shorebird release` 永远用其**私有 Flutter fork**，`--flutter-version=fvm/system` 只是解析版本号、仍用 fork，绕不过。官方承诺「季度版本 5 个工作日内跟进」→ 3.50.x 约 2026-11-18 可用。 | **等 3.50.x fork 发布，不降级**。降级要重建第三套原生壳（3.47.9 要 Gradle 8.14 / AGP 8.11.1 / KGP 2.2.20，而当前 3.50 壳是 AGP 9.3.1 / Gradle 9.5.0 / compileSdk 36），等于回退近期全部 3.50 适配。工作流用 `shorebird flutter versions list` 实测断言 `3.50.` 存在，否则不放行 |
+| **G3 主交付物** | 补丁只能作用于 `shorebird release` 产出的基线；`flutter build apk` 的普通包不可补丁。整包更新（「检查更新」→ NAS APK）会**整包覆盖**，悄悄抹掉可补丁性。 | Phase 1 先把基线作为**并行 asset** 发到独立草稿 Release（`selfuse-shorebird-latest` / `shorebird-v<版本>-build<run>`，与整包线的 `selfuse-latest` / `v<版本>-build<run>` 错开），端到端验证通过后再扶正为主包；**扶正时必须把 NAS 的 `weihan-selfuse-arm64.apk` 载荷也换成 Shorebird 基线** |
+
+**接入步骤（Phase 1，闸门放行后一次性）**
+
+1. 装 Shorebird CLI、登录，本地执行一次 `shorebird init`：创建云 app、生成真实
+   `shorebird.yaml`（含 `app_id` 与 `patch_verification: strict`）、并把它注册进
+   `pubspec.yaml` 的 assets。提交 `shorebird.yaml`（app_id 不是密钥）。
+2. 在 Shorebird Console 建服务账号/个人 API key（Developer 角色），存为仓库 Secret
+   **`SHOREBIRD_TOKEN`**；置仓库 Variable **`SHOREBIRD_ENABLED = 1`**（未设时工作流
+   job 直接跳过）。OIDC 免密登录需 Business/Enterprise plan，个人自用用 token 即可。
+3. Actions → `shorebird-codepush` → `mode=release` 手动跑：过 G2 版本闸门 →
+   `write_bundle_defines.py` 注入自带凭证（基线仍是「自带凭证自用包」）→
+   `shorebird release android --artifact apk --target-platform android-arm64` →
+   把基线 APK 发到独立草稿 Release。
+4. 真机装基线，验证语音开箱即用；放行 Shorebird CDN 过 mihomo（2026-11-02 起补丁
+   下载走平台 HTTP 栈，设备代理/VPN 生效）。之后发补丁：`mode=patch`（可先 `track=staging`
+   验证，再在控制台 promote 到 `stable`）。
+
+**发布决策规则（按改动类型，自上而下选第一条命中的）**
+
+1. **改数据/参数/文案/开关/术语** → L1 热配置：改 `deploy/update/remote-config.json`，
+   `configVersion+1`，push。零重建、零云交互。
+2. **改 Dart 逻辑/UI（bugfix、字符串、后端指向），不碰原生/插件/资源/引擎/权限/
+   `--dart-define`/version** → `shorebird patch android`。补丁不改 version，整包通道
+   不受影响；下次启动后台下载、再下次启动生效；失败自动回退上一可用版本，控制台可回滚。
+3. **改依赖/引擎/Flutter 版本，或需要一条新的可补丁基线** → `shorebird release android`
+   （同一 version 不能重复 release，需升 build number）。
+4. **大改版 / 要弹「检查更新」** → 整包更新：升 `pubspec.yaml` version（含
+   `lib/app_version.dart` 的 `kAppVersion`，`scripts/check_version.py` 强校验）、
+   重生成 `latest-android.json`、推 NAS。**G3 扶正后，该 APK 也须是 Shorebird 基线。**
+
+**边界**：补丁仅 Dart，不能改原生壳/插件/资源/引擎/权限/编译期凭证/version；基线
+必须用 `shorebird release` 产物；免费 5,000 次补丁安装/月；`patch_verification: strict`
+（`install_only` 是 3.47.0–3.47.7 已知坑，本项目强制 strict）。
+**iOS/TestFlight 延后**：`shorebird release ios`/`patch ios` 涉及重签名 +
+App Store 3.3.1(B)，`selfuse-bundled.yml` 的 testflight job 保持原样。

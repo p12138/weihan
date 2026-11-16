@@ -1,0 +1,24 @@
+# shorebird.yaml 模板 —— L2 真代码热更新（可选第三通道）示例，不是真实文件。
+#
+# 真实文件由 Phase 1 一次性执行 `shorebird init` 生成并应提交入库：
+#   * 它会在 Shorebird 云创建 app、分配真实 app_id；
+#   * 它会把本文件注册进 pubspec.yaml 的 flutter assets（App 启动时要读）；
+#   * app_id 不是密钥，可入库、可公开（见 README §10.4）。
+#
+# 本模板刻意命名为 .example：避免占位 app_id 被当成真实配置，也避免干扰
+# `shorebird init`（该文件对已存在的 shorebird.yaml 行为未定义）。
+# 接入时：`cp shorebird.yaml.example shorebird.yaml` 后用 shorebird init 覆盖，
+# 或直接让 shorebird init 生成；CI 闸门会拒绝 REPLACE_WITH_APP_ID 占位符。
+#
+# shorebird.yaml 只允许以下键，出现其它键会让 shorebird release 直接报错：
+#   app_id / flavors / base_url / auto_update / patch_verification
+
+# 你的 app_id（不保密）。REPLACE_WITH_APP_ID 是占位符，CI 会拒绝它。
+app_id: REPLACE_WITH_APP_ID
+
+# 补丁签名校验：strict（默认）= 每次启动都校验签名；install_only 是
+# 3.47.0–3.47.7 的已知坑，且降低安全性，本项目强制 strict。
+patch_verification: strict
+
+# auto_update 默认 true：App 每次启动在后台检查 stable track 的补丁。
+# 保持默认即可，无需显式写。
