@@ -781,7 +781,7 @@ CI 需要的配置：
 
 | 类型 | 名称 | 用途 |
 |---|---|---|
-| Variable | `UPDATE_NAS_BASE` | NAS 控制面 + 载荷基址，如 `https://weihan.example.com/data`；**配了才有 NAS 兜底与载荷下载**（不含认证） |
+| Variable | `UPDATE_NAS_BASE` | NAS 控制面 + 载荷基址，如 `https://weihan.example.com`；填到能直接 GET 到 `/latest-android.json` 的那一层（`deploy/nas` 的 nginx 已把 `data/` 挂为 root，**别再带 `/data`**）；**配了才有 NAS 兜底与载荷下载**（不含认证） |
 | Variable | `UPDATE_GITHUB_PAYLOAD_BASE` | 仅设计 B（`BUNDLE_ALLOW_PUBLIC=1`）才设，默认空 |
 | Secret ×5 | `NAS_HOST` / `NAS_PORT` / `NAS_USER` / `NAS_SSH_KEY` / `NAS_UPDATE_DIR` | 出包后 scp 把 APK/IPA/清单/配置推上 NAS；缺任一则跳过推送，不影响出包 |
 
